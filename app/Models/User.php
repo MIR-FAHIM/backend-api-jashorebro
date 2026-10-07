@@ -147,4 +147,124 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     {
         return $this->phone_verified_at !== null;
     }
+
+    /**
+     * Sent friendship requests / relationships.
+     */
+    public function sentFriendships(): HasMany
+    {
+        return $this->hasMany(Friendship::class, 'sender_id');
+    }
+
+    /**
+     * Received friendship requests / relationships.
+     */
+    public function receivedFriendships(): HasMany
+    {
+        return $this->hasMany(Friendship::class, 'recipient_id');
+    }
+
+    /**
+     * IDs of all confirmed friends.
+     *
+     * @return array<int>
+     */
+    public function friendIds(): array
+    {
+        $sent = $this->sentFriendships()
+            ->where('status', 'accepted')
+            ->pluck('recipient_id')
+            ->all();
+
+        $received = $this->receivedFriendships()
+            ->where('status', 'accepted')
+            ->pluck('sender_id')
+            ->all();
+
+        return array_values(array_unique(array_merge($sent, $received)));
+    }
+
+    /**
+     * Query builder for all confirmed friends.
+     */
+    public function friendsQuery()
+    {
+        $friendIds = $this->friendIds();
+
+        return static::query()->whereIn('id', $friendIds);
+    }
+
+    /**
+     * Find friendship record between this user and another.
+     */
+    public function friendshipWith(User|int $user): ?Friendship
+    {
+        $targetId = $user instanceof User ? $user->id : $user;
+
+        return Friendship::where(function ($query) use ($targetId) {
+            $query->where('sender_id', $this->id)->where('recipient_id', $targetId);
+        })->orWhere(function ($query) use ($targetId) {
+            $query->where('sender_id', $targetId)->where('recipient_id', $this->id);
+        })->first();
+    }
+
+    /**
+     * Check if this user is confirmed friends with another.
+     */
+    public function isFriendsWith(User|int $user): bool
+    {
+        $targetId = $user instanceof User ? $user->id : $user;
+
+        return in_array($targetId, $this->friendIds(), true);
+    }
+
+    /**
+     * Determine relationship status with another user:
+     * 'self' | 'friends' | 'pending_sent' | 'pending_received' | 'blocked' | 'none'
+     */
+    public function relationshipStatusWith(User|int $user): string
+    {
+        $targetId = $user instanceof User ? $user->id : $user;
+
+        if ($this->id === $targetId) {
+            return 'self';
+        }
+
+        $friendship = $this->friendshipWith($targetId);
+
+        if (! $friendship) {
+            return 'none';
+        }
+
+        if ($friendship->status === 'accepted') {
+            return 'friends';
+        }
+
+        if ($friendship->status === 'blocked') {
+            return 'blocked';
+        }
+
+        if ($friendship->status === 'pending') {
+            return $friendship->sender_id === $this->id ? 'pending_sent' : 'pending_received';
+        }
+
+        return 'none';
+    }
+
+    /**
+     * Calculate count of mutual friends with another user.
+     */
+    public function mutualFriendsCountWith(User|int $user): int
+    {
+        $target = $user instanceof User ? $user : static::find($user);
+        if (! $target) {
+            return 0;
+        }
+
+        $myFriends = $this->friendIds();
+        $theirFriends = $target->friendIds();
+
+        return count(array_intersect($myFriends, $theirFriends));
+    }
 }
+
