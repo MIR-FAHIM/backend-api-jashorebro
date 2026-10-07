@@ -1,7 +1,10 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\FriendController;
+use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\SellerController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -46,4 +49,27 @@ Route::middleware('auth:sanctum')->prefix('friends')->group(function () {
 
 // Instagram-style public user profile
 Route::get('/users/{username}', [FriendController::class, 'userProfile']);
+
+/*
+|--------------------------------------------------------------------------
+| Merchants & Product Catalog Routes
+|--------------------------------------------------------------------------
+*/
+Route::prefix('categories')->group(function () {
+    Route::get('/', [CategoryController::class, 'index']);
+    Route::get('/{slug}', [CategoryController::class, 'show']);
+});
+
+Route::prefix('products')->group(function () {
+    Route::get('/', [ProductController::class, 'index']);
+    Route::get('/featured', [ProductController::class, 'featured']);
+    Route::get('/{slug}', [ProductController::class, 'show']);
+});
+
+Route::prefix('sellers')->group(function () {
+    Route::get('/', [SellerController::class, 'index']);
+    Route::get('/{slug}', [SellerController::class, 'show']);
+    Route::middleware('auth:sanctum')->post('/apply', [SellerController::class, 'apply']);
+});
+
 

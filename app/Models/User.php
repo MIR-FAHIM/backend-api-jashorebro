@@ -87,6 +87,28 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     }
 
     /**
+     * Seller merchant profile owned by this user.
+     */
+    public function seller(): HasOne
+    {
+        return $this->hasOne(Seller::class);
+    }
+
+    /**
+     * Store memberships (team staff/managers).
+     */
+    public function sellerMemberships(): HasMany
+    {
+        return $this->hasMany(SellerMember::class);
+    }
+
+    public function isSeller(): bool
+    {
+        return $this->seller()->where('status', 'active')->exists();
+    }
+
+
+    /**
      * Saved delivery addresses.
      */
     public function addresses(): HasMany
