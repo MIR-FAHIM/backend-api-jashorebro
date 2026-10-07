@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\FriendController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\SellerController;
+use App\Http\Controllers\Api\AdminController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -71,5 +72,19 @@ Route::prefix('sellers')->group(function () {
     Route::get('/{slug}', [SellerController::class, 'show']);
     Route::middleware('auth:sanctum')->post('/apply', [SellerController::class, 'apply']);
 });
+
+/*
+|--------------------------------------------------------------------------
+| Admin & Governance Control Center Routes
+|--------------------------------------------------------------------------
+*/
+Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
+    Route::get('/overview', [AdminController::class, 'overview']);
+    Route::get('/users', [AdminController::class, 'users']);
+    Route::get('/sellers', [AdminController::class, 'sellers']);
+    Route::patch('/sellers/{id}/status', [AdminController::class, 'updateSellerStatus']);
+    Route::patch('/products/{id}', [AdminController::class, 'updateProduct']);
+});
+
 
 
