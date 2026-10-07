@@ -23,3 +23,9 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+# Force ea-php82 for cPanel EasyApache
+<IfModule mime_module>
+    AddHandler application/x-httpd-ea-php82 .php
+</IfModule>
+
