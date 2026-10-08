@@ -150,9 +150,19 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
         return $this->roles->contains('name', $roleName);
     }
 
+    public function isAdmin(): bool
+    {
+        return $this->roles()->whereIn('name', ['admin', 'super_admin'])->exists();
+    }
+
     public function isStaff(): bool
     {
         return $this->roles()->exists();
+    }
+
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Order::class);
     }
 
     public function isActive(): bool
