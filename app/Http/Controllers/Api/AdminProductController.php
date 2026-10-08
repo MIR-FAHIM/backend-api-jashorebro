@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\ProductImage;
 use App\Services\AdminProductService;
 use App\Services\LogService;
+use App\Support\MediaUrl;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -324,7 +325,7 @@ class AdminProductController extends Controller
 
         foreach ($request->file('images') as $index => $file) {
             $path = $file->store("products/{$product->id}", 'public');
-            $imageUrl = Storage::disk('public')->url($path);
+            $imageUrl = MediaUrl::resolve(Storage::disk('public')->url($path), $path);
 
             $isPrimary = (! $hasPrimary && $index === 0);
             if ($isPrimary) $hasPrimary = true;

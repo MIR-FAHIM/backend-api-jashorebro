@@ -467,8 +467,11 @@ class FriendController extends Controller
         $followersCount = $user->followers()->count();
         $followingCount = $user->following()->count();
 
-        // Active shop if exists
-        $shop = CommunityShop::where('user_id', $user->id)
+        // Active shop if exists with active listings
+        $shop = CommunityShop::with(['activeListings' => function ($q) {
+                $q->orderBy('display_order', 'asc')->with(['product.primaryImage']);
+            }])
+            ->where('user_id', $user->id)
             ->whereIn('status', ['active', 'verified'])
             ->first();
 
@@ -481,13 +484,18 @@ class FriendController extends Controller
             ->limit(12)
             ->get();
 
-        // Drops organized by this user
+        // Drops organized by this user with active participant count
         $organizedDrops = GroupBuyCampaign::with(['product.primaryImage', 'variant'])
+            ->withCount(['participants' => function ($q) {
+                $q->whereIn('status', ['reserved', 'confirmed']);
+            }])
             ->where('organizer_user_id', $user->id)
             ->where('status', 'active')
             ->orderBy('id', 'desc')
             ->limit(6)
             ->get();
+
+        $roles = $user->roles()->pluck('name')->all();
 
         return response()->json([
             'success' => true,
@@ -497,11 +505,16 @@ class FriendController extends Controller
                 'username' => $user->username,
                 'phone_verified' => $user->isPhoneVerified(),
                 'joined_at' => $user->created_at?->format('F Y'),
+                'roles' => $roles,
+                'is_seller' => $user->isSeller(),
+                'is_community_seller' => $user->isCommunitySeller(),
                 'profile' => [
                     'bio' => $user->profile?->bio ?? 'Community member in JashoreBro.',
-                    'avatar_url' => $user->profile?->avatar_url,
+                    'avatar_url' => $user->profile?->avatar_path,
+                    'cover_url' => $user->profile?->cover_image_path,
                     'locality' => $user->profile?->locality ?? 'Jashore',
-                    'district' => $user->profile?->district ?? 'Jashore',
+                    'district' => 'Jashore',
+                    'website_url' => $user->profile?->website_url,
                 ],
                 'stats' => [
                     'friends_count' => $friendsCount,
@@ -520,10 +533,64 @@ class FriendController extends Controller
                     'slug' => $shop->slug,
                     'description' => $shop->description,
                     'logo_url' => $shop->logo_url,
+                    'banner_url' => $shop->banner_url,
                     'is_verified' => (bool) $shop->is_verified,
+                    'status' => $shop->status,
+                    'listings_count' => $shop->activeListings->count(),
+                    'listings' => $shop->activeListings->take(8)->map(function ($l) {
+                        return [
+                            'id' => $l->id,
+                            'caption' => $l->caption,
+                            'selling_price' => (float) $l->selling_price,
+                            'product' => [
+                                'id' => $l->product->id,
+                                'title' => $l->product->title,
+                                'slug' => $l->product->slug,
+                                'base_price' => (float) $l->product->base_price,
+                                'image' => $l->product->primaryImage?->image_url ?? $l->product->image,
+                                'brand' => $l->product->brand,
+                            ],
+                        ];
+                    })->values()->all(),
                 ] : null,
-                'picks' => $publicPicks,
-                'drops' => $organizedDrops,
+                'picks' => $publicPicks->map(function ($pick) {
+                    return [
+                        'id' => $pick->id,
+                        'caption' => $pick->caption,
+                        'is_featured' => (bool) $pick->is_featured,
+                        'recommendation_code' => $pick->recommendation_code,
+                        'product' => $pick->product ? [
+                            'id' => $pick->product->id,
+                            'title' => $pick->product->title,
+                            'slug' => $pick->product->slug,
+                            'base_price' => (float) $pick->product->base_price,
+                            'compare_price' => $pick->product->compare_price ? (float) $pick->product->compare_price : null,
+                            'brand' => $pick->product->brand,
+                            'stock_quantity' => $pick->product->stock_quantity,
+                            'image' => $pick->product->primaryImage?->thumbnail_url ?? $pick->product->primaryImage?->image_url ?? $pick->product->image,
+                        ] : null,
+                    ];
+                })->values()->all(),
+                'drops' => $organizedDrops->map(function ($drop) {
+                    return [
+                        'id' => $drop->id,
+                        'campaign_code' => $drop->campaign_code,
+                        'title' => $drop->title,
+                        'group_price' => (float) $drop->group_price,
+                        'target_participants' => (int) $drop->target_participants,
+                        'max_participants' => (int) $drop->max_participants,
+                        'participants_count' => (int) ($drop->participants_count ?? 0),
+                        'start_at' => $drop->start_at?->toIso8601String(),
+                        'end_at' => $drop->end_at?->toIso8601String(),
+                        'product' => $drop->product ? [
+                            'id' => $drop->product->id,
+                            'title' => $drop->product->title,
+                            'slug' => $drop->product->slug,
+                            'base_price' => (float) $drop->product->base_price,
+                            'image' => $drop->product->primaryImage?->thumbnail_url ?? $drop->product->primaryImage?->image_url ?? $drop->product->image,
+                        ] : null,
+                    ];
+                })->values()->all(),
             ],
         ]);
     }

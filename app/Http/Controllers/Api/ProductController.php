@@ -206,6 +206,7 @@ class ProductController extends Controller
                 'images' => $product->images->map(fn ($img) => [
                     'id' => $img->id,
                     'image_url' => $img->image_url,
+                    'thumbnail_url' => $img->thumbnail_url,
                     'is_primary' => $img->is_primary,
                     'alt_text' => $img->alt_text,
                 ]),

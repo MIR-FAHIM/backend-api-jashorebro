@@ -280,4 +280,13 @@ class Product extends Model
 
         return null;
     }
+
+    /**
+     * Primary or first image live URL.
+     */
+    public function getImageAttribute(): ?string
+    {
+        return $this->primaryImage?->image_url ?? $this->images->first()?->image_url;
+    }
 }
+

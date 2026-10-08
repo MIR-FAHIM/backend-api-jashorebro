@@ -61,6 +61,10 @@ class ProductVariant extends Model
         ];
     }
 
+    protected $appends = [
+        'image_url',
+    ];
+
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
@@ -87,5 +91,13 @@ class ProductVariant extends Model
     public function getEffectivePriceAttribute(): float
     {
         return $this->price_override !== null ? (float) $this->price_override : (float) ($this->product->base_price ?? 0);
+    }
+
+    /**
+     * Get image URL directly from associated ProductImage.
+     */
+    public function getImageUrlAttribute(): ?string
+    {
+        return $this->image?->image_url;
     }
 }

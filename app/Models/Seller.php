@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\MediaUrl;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -60,6 +61,26 @@ class Seller extends Model
             'rating_avg' => 'float',
             'rating_count' => 'integer',
         ];
+    }
+
+    public function getLogoUrlAttribute(?string $value): ?string
+    {
+        return MediaUrl::resolve($value);
+    }
+
+    public function setLogoUrlAttribute(?string $value): void
+    {
+        $this->attributes['logo_url'] = MediaUrl::resolve($value);
+    }
+
+    public function getBannerUrlAttribute(?string $value): ?string
+    {
+        return MediaUrl::resolve($value);
+    }
+
+    public function setBannerUrlAttribute(?string $value): void
+    {
+        $this->attributes['banner_url'] = MediaUrl::resolve($value);
     }
 
     public function owner(): BelongsTo
