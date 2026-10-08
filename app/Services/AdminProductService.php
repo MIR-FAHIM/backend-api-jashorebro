@@ -8,6 +8,8 @@ use App\Models\ProductAttributeValue;
 use App\Models\ProductVariant;
 use App\Models\Seller;
 use App\Models\User;
+use App\Services\LogService;
+use App\Services\NotificationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -89,6 +91,33 @@ class AdminProductService
                 $this->syncVariants($product, $variants);
             }
 
+            // Record business log within transaction
+            app(LogService::class)->record(
+                event: 'product.created',
+                outcome: 'success',
+                actor: $userId,
+                subject: $product,
+                metadata: [
+                    'product_id' => $product->id,
+                    'sku' => $product->sku,
+                    'title' => $product->title,
+                    'status' => $product->status,
+                    'base_price' => (float) $product->base_price,
+                    'variants_count' => count($variants),
+                ],
+                message: "Product '{$product->title}' created."
+            );
+
+            // In-App Notification: Notify admins that new product was created
+            app(NotificationService::class)->sendToAdmins(
+                event: 'product.created_admin',
+                title: "New Product Draft Added",
+                message: "Product '{$product->title}' was added to catalog.",
+                subject: $product,
+                actionUrl: '/admin/catalog',
+                dedupKey: "prod_created_admin_{$product->id}"
+            );
+
             return $product->fresh(['category', 'seller', 'primaryImage', 'images', 'specifications', 'variants.attributeItems']);
         });
     }
@@ -99,6 +128,7 @@ class AdminProductService
     public function updateProduct(Product $product, array $data, int $userId): Product
     {
         return DB::transaction(function () use ($product, $data, $userId) {
+            $oldStatus = $product->status;
             $data['updated_by'] = $userId;
 
             if (isset($data['slug']) && $data['slug'] !== $product->slug) {
@@ -123,6 +153,53 @@ class AdminProductService
             if ($variants !== null) {
                 $this->syncVariants($product, $variants);
             }
+
+            $newStatus = $product->status;
+            $changedFields = array_keys($product->getChanges());
+
+            // If newly published
+            if ($oldStatus !== 'published' && $newStatus === 'published') {
+                app(LogService::class)->record(
+                    event: 'product.published',
+                    outcome: 'success',
+                    actor: $userId,
+                    subject: $product,
+                    metadata: [
+                        'product_id' => $product->id,
+                        'sku' => $product->sku,
+                        'title' => $product->title,
+                        'status' => 'published',
+                        'changed_fields' => $changedFields,
+                    ],
+                    message: "Product '{$product->title}' published to catalog."
+                );
+
+                // In-App Notification: Notify admins that product is live
+                app(NotificationService::class)->sendToAdmins(
+                    event: 'product.published_admin',
+                    title: "Product Published",
+                    message: "Product '{$product->title}' is now published to the catalog.",
+                    subject: $product,
+                    actionUrl: '/admin/catalog',
+                    dedupKey: "prod_published_admin_{$product->id}"
+                );
+            }
+
+            // General update log
+            app(LogService::class)->record(
+                event: 'product.updated',
+                outcome: 'success',
+                actor: $userId,
+                subject: $product,
+                metadata: [
+                    'product_id' => $product->id,
+                    'sku' => $product->sku,
+                    'title' => $product->title,
+                    'status' => $product->status,
+                    'changed_fields' => $changedFields,
+                ],
+                message: "Product '{$product->title}' updated."
+            );
 
             return $product->fresh(['category', 'seller', 'primaryImage', 'images', 'specifications', 'variants.attributeItems']);
         });

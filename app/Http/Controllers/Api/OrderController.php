@@ -9,6 +9,9 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Services\LogService;
+use App\Services\NotificationService;
+use App\Services\OrderStatusService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,6 +20,10 @@ use Illuminate\Validation\ValidationException;
 
 class OrderController extends Controller
 {
+    public function __construct(
+        protected OrderStatusService $orderStatusService
+    ) {}
+
     /**
      * Revalidate and quote checkout totals server-side. Never trusts client calculations.
      */
@@ -114,192 +121,293 @@ class OrderController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'items' => 'required|array|min:1',
-            'items.*.product_id' => 'required|exists:products,id',
-            'items.*.variant_id' => 'nullable|exists:product_variants,id',
-            'items.*.quantity' => 'required|integer|min:1',
-            'items.*.purchase_mode' => 'required|in:normal,group_buy',
-            'items.*.campaign_id' => 'nullable|exists:group_buy_campaigns,id',
-            'payment_method' => 'required|in:cod,bkash,nagad',
-            'shipping_name' => 'required|string|max:100',
-            'shipping_phone' => 'required|string|max:30',
-            'shipping_district' => 'required|string|max:50',
-            'shipping_upazila' => 'required|string|max:50',
-            'shipping_address' => 'required|string',
-            'notes' => 'nullable|string|max:500',
-        ]);
-
         $user = $request->user();
 
-        $order = DB::transaction(function () use ($validated, $user) {
-            $subtotal = 0.00;
-            $maxShippingCharge = 0.00;
-            $allFreeShipping = true;
-            $sellerId = null;
-            $orderItemsData = [];
-            $groupParticipantsToCreate = [];
-            $campaignsToInspect = [];
-
-            foreach ($validated['items'] as $line) {
-                // Lock product & variant rows to prevent race condition overselling
-                /** @var Product $product */
-                $product = Product::where('id', $line['product_id'])->lockForUpdate()->firstOrFail();
-                $variant = ! empty($line['variant_id'])
-                    ? ProductVariant::where('id', $line['variant_id'])->lockForUpdate()->firstOrFail()
-                    : null;
-
-                $quantity = (int) $line['quantity'];
-                $mode = $line['purchase_mode'];
-                $sellerId = $product->seller_id;
-
-                // Inventory verification & deduction
-                if ($product->track_inventory) {
-                    $available = $variant ? $variant->stock_quantity : $product->stock_quantity;
-                    if ($available < $quantity) {
-                        throw ValidationException::withMessages([
-                            'items' => ["The item '{$product->title}' has only {$available} in stock."],
-                        ]);
-                    }
-
-                    if ($variant) {
-                        $variant->decrement('stock_quantity', $quantity);
-                        $product->decrement('stock_quantity', $quantity);
-                    } else {
-                        $product->decrement('stock_quantity', $quantity);
-                    }
-                }
-
-                // Determine price & handle group campaign
-                if ($mode === 'group_buy') {
-                    $campaign = GroupBuyCampaign::where('id', $line['campaign_id'])->lockForUpdate()->firstOrFail();
-                    if ($campaign->status !== 'active' || $campaign->isExpired()) {
-                        throw ValidationException::withMessages([
-                            'items' => ["The drop campaign '{$campaign->title}' has ended."],
-                        ]);
-                    }
-
-                    // Enforce limit per customer
-                    $existingQty = GroupBuyParticipant::where('campaign_id', $campaign->id)
-                        ->where('user_id', $user->id)
-                        ->whereIn('status', ['reserved', 'confirmed'])
-                        ->sum('quantity');
-
-                    if (($existingQty + $quantity) > $campaign->quantity_limit_per_customer) {
-                        throw ValidationException::withMessages([
-                            'items' => ["Maximum allowed quantity for this drop is {$campaign->quantity_limit_per_customer} per customer."],
-                        ]);
-                    }
-
-                    $unitPrice = (float) $campaign->group_price;
-
-                    $groupParticipantsToCreate[] = [
-                        'campaign' => $campaign,
-                        'variant_id' => $variant?->id,
-                        'quantity' => $quantity,
-                        'unit_price' => $unitPrice,
-                    ];
-
-                    $campaignsToInspect[$campaign->id] = $campaign;
-                } else {
-                    $unitPrice = $variant ? (float) $variant->effective_price : (float) $product->base_price;
-                }
-
-                $lineTotal = $unitPrice * $quantity;
-                $subtotal += $lineTotal;
-
-                if (! $product->is_free_shipping) {
-                    $allFreeShipping = false;
-                    $maxShippingCharge = max($maxShippingCharge, (float) ($product->shipping_charge ?? 60.00));
-                }
-
-                $orderItemsData[] = [
-                    'product_id' => $product->id,
-                    'product_variant_id' => $variant?->id,
-                    'purchase_mode' => $mode,
-                    'group_buy_campaign_id' => $line['campaign_id'] ?? null,
-                    'product_title' => $product->title,
-                    'product_sku' => $variant?->sku ?? $product->sku,
-                    'variant_name' => $variant?->name,
-                    'variant_attributes' => $variant?->attributes,
-                    'unit_price' => $unitPrice,
-                    'quantity' => $quantity,
-                    'line_total' => $lineTotal,
-                ];
-            }
-
-            $shippingFee = $allFreeShipping ? 0.00 : ($maxShippingCharge > 0 ? $maxShippingCharge : 60.00);
-            $totalAmount = $subtotal + $shippingFee;
-
-            // Generate order number
-            $orderNumber = 'JB-ORD-' . date('Ymd') . '-' . strtoupper(Str::random(5));
-
-            $order = Order::create([
-                'order_number' => $orderNumber,
-                'user_id' => $user->id,
-                'seller_id' => $sellerId ?? 1,
-                'status' => 'pending',
-                'payment_status' => 'unpaid',
-                'payment_method' => $validated['payment_method'],
-                'subtotal' => round($subtotal, 2),
-                'shipping_fee' => round($shippingFee, 2),
-                'discount_amount' => 0.00,
-                'total_amount' => round($totalAmount, 2),
-                'shipping_name' => $validated['shipping_name'],
-                'shipping_phone' => $validated['shipping_phone'],
-                'shipping_district' => $validated['shipping_district'],
-                'shipping_upazila' => $validated['shipping_upazila'],
-                'shipping_address' => $validated['shipping_address'],
-                'notes' => $validated['notes'] ?? null,
+        try {
+            $validated = $request->validate([
+                'items' => 'required|array|min:1',
+                'items.*.product_id' => 'required|exists:products,id',
+                'items.*.variant_id' => 'nullable|exists:product_variants,id',
+                'items.*.quantity' => 'required|integer|min:1',
+                'items.*.purchase_mode' => 'required|in:normal,group_buy',
+                'items.*.campaign_id' => 'nullable|exists:group_buy_campaigns,id',
+                'payment_method' => 'required|in:cod,bkash,nagad',
+                'shipping_name' => 'required|string|max:100',
+                'shipping_phone' => 'required|string|max:30',
+                'shipping_district' => 'required|string|max:50',
+                'shipping_upazila' => 'required|string|max:50',
+                'shipping_address' => 'required|string',
+                'notes' => 'nullable|string|max:500',
             ]);
 
-            // Save order items
-            foreach ($orderItemsData as $itemData) {
-                $itemData['order_id'] = $order->id;
-                OrderItem::create($itemData);
-            }
+            $order = DB::transaction(function () use ($validated, $user) {
+                $subtotal = 0.00;
+                $maxShippingCharge = 0.00;
+                $allFreeShipping = true;
+                $sellerId = null;
+                $orderItemsData = [];
+                $groupParticipantsToCreate = [];
+                $campaignsToInspect = [];
 
-            // Save group buy reservations
-            foreach ($groupParticipantsToCreate as $gpData) {
-                GroupBuyParticipant::create([
-                    'campaign_id' => $gpData['campaign']->id,
-                    'user_id' => $user->id,
-                    'order_id' => $order->id,
-                    'product_variant_id' => $gpData['variant_id'],
-                    'quantity' => $gpData['quantity'],
-                    'unit_price' => $gpData['unit_price'],
-                    'status' => 'reserved',
-                    'reserved_at' => now(),
-                ]);
-            }
+                foreach ($validated['items'] as $line) {
+                    // Lock product & variant rows to prevent race condition overselling
+                    /** @var Product $product */
+                    $product = Product::where('id', $line['product_id'])->lockForUpdate()->firstOrFail();
+                    $variant = ! empty($line['variant_id'])
+                        ? ProductVariant::where('id', $line['variant_id'])->lockForUpdate()->firstOrFail()
+                        : null;
 
-            // Inspect campaigns: If target reached, mark succeeded!
-            foreach ($campaignsToInspect as $camp) {
-                $distinctCount = GroupBuyParticipant::where('campaign_id', $camp->id)
-                    ->whereIn('status', ['reserved', 'confirmed'])
-                    ->distinct('user_id')
-                    ->count('user_id');
+                    $quantity = (int) $line['quantity'];
+                    $mode = $line['purchase_mode'];
+                    $sellerId = $product->seller_id;
 
-                if ($distinctCount >= $camp->target_participants) {
-                    $camp->update([
-                        'status' => 'succeeded',
-                        'success_at' => now(),
-                    ]);
+                    // Inventory verification & deduction
+                    if ($product->track_inventory) {
+                        $available = $variant ? $variant->stock_quantity : $product->stock_quantity;
+                        if ($available < $quantity) {
+                            throw ValidationException::withMessages([
+                                'items' => ["The item '{$product->title}' has only {$available} in stock."],
+                            ]);
+                        }
 
-                    // Confirm reservations
-                    GroupBuyParticipant::where('campaign_id', $camp->id)
-                        ->where('status', 'reserved')
-                        ->update(['status' => 'confirmed']);
+                        if ($variant) {
+                            $variant->decrement('stock_quantity', $quantity);
+                            $product->decrement('stock_quantity', $quantity);
+                        } else {
+                            $product->decrement('stock_quantity', $quantity);
+                        }
+                    }
+
+                    // Determine price & handle group campaign
+                    if ($mode === 'group_buy') {
+                        $campaign = GroupBuyCampaign::where('id', $line['campaign_id'])->lockForUpdate()->firstOrFail();
+                        if ($campaign->status !== 'active' || $campaign->isExpired()) {
+                            throw ValidationException::withMessages([
+                                'items' => ["The drop campaign '{$campaign->title}' has ended."],
+                            ]);
+                        }
+
+                        // Enforce limit per customer
+                        $existingQty = GroupBuyParticipant::where('campaign_id', $campaign->id)
+                            ->where('user_id', $user->id)
+                            ->whereIn('status', ['reserved', 'confirmed'])
+                            ->sum('quantity');
+
+                        if (($existingQty + $quantity) > $campaign->quantity_limit_per_customer) {
+                            throw ValidationException::withMessages([
+                                'items' => ["Maximum allowed quantity for this drop is {$campaign->quantity_limit_per_customer} per customer."],
+                            ]);
+                        }
+
+                        $unitPrice = (float) $campaign->group_price;
+
+                        $groupParticipantsToCreate[] = [
+                            'campaign' => $campaign,
+                            'variant_id' => $variant?->id,
+                            'quantity' => $quantity,
+                            'unit_price' => $unitPrice,
+                        ];
+
+                        $campaignsToInspect[$campaign->id] = $campaign;
+                    } else {
+                        $unitPrice = $variant ? (float) $variant->effective_price : (float) $product->base_price;
+                    }
+
+                    $lineTotal = $unitPrice * $quantity;
+                    $subtotal += $lineTotal;
+
+                    if (! $product->is_free_shipping) {
+                        $allFreeShipping = false;
+                        $maxShippingCharge = max($maxShippingCharge, (float) ($product->shipping_charge ?? 60.00));
+                    }
+
+                    $orderItemsData[] = [
+                        'product_id' => $product->id,
+                        'product_variant_id' => $variant?->id,
+                        'purchase_mode' => $mode,
+                        'group_buy_campaign_id' => $line['campaign_id'] ?? null,
+                        'product_title' => $product->title,
+                        'product_sku' => $variant?->sku ?? $product->sku,
+                        'variant_name' => $variant?->name,
+                        'variant_attributes' => $variant?->attributes,
+                        'unit_price' => $unitPrice,
+                        'quantity' => $quantity,
+                        'line_total' => $lineTotal,
+                    ];
                 }
-            }
 
-            return $order;
-        });
+                $shippingFee = $allFreeShipping ? 0.00 : ($maxShippingCharge > 0 ? $maxShippingCharge : 60.00);
+                $totalAmount = $subtotal + $shippingFee;
+
+                // Determine initial status based on purchase modes
+                $hasActiveGroupBuy = false;
+                foreach ($validated['items'] as $line) {
+                    if ($line['purchase_mode'] === 'group_buy' && ! empty($line['campaign_id'])) {
+                        $camp = $campaignsToInspect[$line['campaign_id']] ?? null;
+                        if ($camp && $camp->status !== 'succeeded') {
+                            $hasActiveGroupBuy = true;
+                        }
+                    }
+                }
+                $initialStatus = $hasActiveGroupBuy ? 'awaiting_group' : 'pending';
+
+                // Generate order number
+                $orderNumber = 'JB-ORD-' . date('Ymd') . '-' . strtoupper(Str::random(5));
+
+                $order = Order::create([
+                    'order_number' => $orderNumber,
+                    'user_id' => $user->id,
+                    'seller_id' => $sellerId ?? 1,
+                    'status' => $initialStatus,
+                    'payment_status' => 'unpaid',
+                    'payment_method' => $validated['payment_method'],
+                    'subtotal' => round($subtotal, 2),
+                    'shipping_fee' => round($shippingFee, 2),
+                    'discount_amount' => 0.00,
+                    'total_amount' => round($totalAmount, 2),
+                    'shipping_name' => $validated['shipping_name'],
+                    'shipping_phone' => $validated['shipping_phone'],
+                    'shipping_district' => $validated['shipping_district'],
+                    'shipping_upazila' => $validated['shipping_upazila'],
+                    'shipping_address' => $validated['shipping_address'],
+                    'notes' => $validated['notes'] ?? null,
+                ]);
+
+                // Save order items
+                foreach ($orderItemsData as $itemData) {
+                    $itemData['order_id'] = $order->id;
+                    OrderItem::create($itemData);
+                }
+
+                // Save group buy reservations
+                foreach ($groupParticipantsToCreate as $gpData) {
+                    GroupBuyParticipant::create([
+                        'campaign_id' => $gpData['campaign']->id,
+                        'user_id' => $user->id,
+                        'order_id' => $order->id,
+                        'product_variant_id' => $gpData['variant_id'],
+                        'quantity' => $gpData['quantity'],
+                        'unit_price' => $gpData['unit_price'],
+                        'status' => 'reserved',
+                        'reserved_at' => now(),
+                    ]);
+                }
+
+                // Record initial order status history
+                $this->orderStatusService->recordInitialStatus(
+                    order: $order,
+                    initialStatus: $initialStatus,
+                    userId: $user->id,
+                    actorType: 'customer',
+                    reason: $initialStatus === 'awaiting_group'
+                        ? 'Volume drop reservation created; awaiting campaign target unlock.'
+                        : 'Order placed successfully by customer.'
+                );
+
+                // Record business log inside transaction (rolled back if transaction fails)
+                app(LogService::class)->record(
+                    event: 'order.created',
+                    outcome: 'success',
+                    actor: $user,
+                    subject: $order,
+                    metadata: [
+                        'order_number' => $order->order_number,
+                        'status' => $order->status,
+                        'total_amount' => (float) $order->total_amount,
+                        'item_count' => count($validated['items']),
+                        'payment_method' => $order->payment_method,
+                    ],
+                    message: "Order #{$order->order_number} was placed successfully."
+                );
+
+                // In-App Notification: Customer order confirmation
+                app(NotificationService::class)->sendToUser(
+                    user: $user,
+                    event: 'order.created',
+                    title: "Order Placed: #{$order->order_number}",
+                    message: "Your order #{$order->order_number} has been received and is being processed (BDT {$order->total_amount}).",
+                    subject: $order,
+                    actionUrl: "/orders/{$order->id}",
+                    audience: 'customer',
+                    dedupKey: "order_created_cust_{$order->id}"
+                );
+
+                // In-App Notification: Notify authorized administrators
+                app(NotificationService::class)->sendToAdmins(
+                    event: 'order.created_admin',
+                    title: "New Order: #{$order->order_number}",
+                    message: "New order #{$order->order_number} placed by {$user->name} for BDT {$order->total_amount}.",
+                    subject: $order,
+                    actionUrl: '/admin/orders',
+                    dedupKey: "order_created_admin_{$order->id}"
+                );
+
+                // In-App Notification: Group buy reservation notice
+                foreach ($groupParticipantsToCreate as $gpData) {
+                    $camp = $gpData['campaign'];
+                    app(NotificationService::class)->sendToUser(
+                        user: $user,
+                        event: 'group_buy.joined',
+                        title: "Joined Drop: {$camp->title} 🎯",
+                        message: "You reserved {$gpData['quantity']} unit(s) in drop '{$camp->title}'. Awaiting target unlock.",
+                        subject: $camp,
+                        actionUrl: "/orders/{$order->id}",
+                        audience: 'customer',
+                        dedupKey: "gb_joined_{$camp->id}_{$user->id}_{$order->id}"
+                    );
+                }
+
+                // Inspect campaigns: If target reached, mark succeeded!
+                foreach ($campaignsToInspect as $camp) {
+                    $distinctCount = GroupBuyParticipant::where('campaign_id', $camp->id)
+                        ->whereIn('status', ['reserved', 'confirmed'])
+                        ->distinct('user_id')
+                        ->count('user_id');
+
+                    if ($distinctCount >= $camp->target_participants && $camp->status !== 'succeeded') {
+                        $camp->update([
+                            'status' => 'succeeded',
+                            'success_at' => now(),
+                        ]);
+
+                        // Confirm reservations
+                        GroupBuyParticipant::where('campaign_id', $camp->id)
+                            ->where('status', 'reserved')
+                            ->update(['status' => 'confirmed']);
+
+                        // Unlock all awaiting orders for this campaign
+                        $this->orderStatusService->handleGroupCampaignUnlocked($camp);
+                    }
+                }
+
+                return $order;
+            });
+        } catch (\Throwable $e) {
+            // Record failure outside of the rolled-back transaction
+            app(LogService::class)->record(
+                event: 'order.creation_failed',
+                outcome: 'failure',
+                actor: $user,
+                subject: null,
+                metadata: [
+                    'failure_reason' => $e->getMessage(),
+                    'item_count' => count($request->input('items', [])),
+                    'payment_method' => $request->input('payment_method'),
+                ],
+                message: 'Order placement failed: ' . $e->getMessage()
+            );
+
+            throw $e;
+        }
 
         return response()->json([
             'success' => true,
             'message' => 'Order placed successfully.',
-            'data' => $order->load(['items', 'seller:id,store_name']),
+            'data' => $order->fresh([
+                'items',
+                'seller:id,store_name',
+                'statusHistories' => fn ($q) => $q->forCustomer(),
+            ]),
         ], 201);
     }
 
@@ -325,17 +433,47 @@ class OrderController extends Controller
     }
 
     /**
-     * Show single order details for authenticated customer.
+     * Show single order details with customer-safe status timeline.
      */
     public function show(Request $request, int $id): JsonResponse
     {
         $order = Order::where('user_id', $request->user()->id)
-            ->with(['items', 'seller:id,store_name,contact_phone'])
+            ->with([
+                'items',
+                'seller:id,store_name,contact_phone',
+                'statusHistories' => function ($q) {
+                    $q->forCustomer()->orderBy('occurred_at', 'asc')->orderBy('id', 'asc');
+                },
+            ])
             ->findOrFail($id);
 
         return response()->json([
             'success' => true,
             'data' => $order,
+        ]);
+    }
+
+    /**
+     * Paginated status history access for authenticated customer.
+     */
+    public function history(Request $request, int $id): JsonResponse
+    {
+        $order = Order::where('user_id', $request->user()->id)->findOrFail($id);
+
+        $histories = $order->statusHistories()
+            ->forCustomer()
+            ->orderBy('occurred_at', 'asc')
+            ->orderBy('id', 'asc')
+            ->paginate(20);
+
+        return response()->json([
+            'success' => true,
+            'data' => $histories->getCollection(),
+            'meta' => [
+                'current_page' => $histories->currentPage(),
+                'last_page' => $histories->lastPage(),
+                'total' => $histories->total(),
+            ],
         ]);
     }
 
@@ -346,38 +484,30 @@ class OrderController extends Controller
     {
         $order = Order::where('user_id', $request->user()->id)->findOrFail($id);
 
-        if ($order->status !== 'pending') {
+        if (! in_array($order->status, ['pending', 'awaiting_group'], true)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Orders that have begun processing or shipment cannot be cancelled online.',
             ], 422);
         }
 
-        DB::transaction(function () use ($order) {
-            $order->update([
-                'status' => 'cancelled',
-                'cancelled_at' => now(),
-                'cancellation_reason' => 'Cancelled by customer',
-            ]);
+        $reason = $request->input('reason', 'Cancelled by customer');
 
-            // Release inventory
-            foreach ($order->items as $item) {
-                if ($item->product_variant_id) {
-                    ProductVariant::where('id', $item->product_variant_id)->increment('stock_quantity', $item->quantity);
-                }
-                Product::where('id', $item->product_id)->increment('stock_quantity', $item->quantity);
-            }
-
-            // Release group reservations if any
-            GroupBuyParticipant::where('order_id', $order->id)->update([
-                'status' => 'cancelled',
-                'cancelled_at' => now(),
-            ]);
-        });
+        $this->orderStatusService->transition(
+            orderOrId: $order,
+            toStatus: 'cancelled',
+            actorType: 'customer',
+            actor: $request->user(),
+            reason: $reason
+        );
 
         return response()->json([
             'success' => true,
             'message' => 'Order cancelled successfully and inventory released.',
+            'data' => $order->fresh([
+                'items',
+                'statusHistories' => fn ($q) => $q->forCustomer(),
+            ]),
         ]);
     }
 }

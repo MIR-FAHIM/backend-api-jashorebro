@@ -3,11 +3,13 @@
 use App\Http\Controllers\Api\AdminAttributeController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminGroupBuyController;
+use App\Http\Controllers\Api\AdminLogController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\FriendController;
+use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\SellerController;
@@ -90,7 +92,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/orders', [OrderController::class, 'store']);
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/{id}', [OrderController::class, 'show']);
+    Route::get('/orders/{id}/history', [OrderController::class, 'history']);
     Route::post('/orders/{id}/cancel', [OrderController::class, 'cancel']);
+
+    // In-App Notifications (Customer & Admin context)
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
+    Route::patch('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
+    Route::post('/notifications/mark-all-read', [NotificationController::class, 'markAllAsRead']);
+    Route::get('/notifications/{id}', [NotificationController::class, 'show']);
 });
 
 /*
@@ -137,5 +147,11 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     // Admin Orders & Fulfillment
     Route::get('/orders', [AdminOrderController::class, 'index']);
     Route::get('/orders/{id}', [AdminOrderController::class, 'show']);
+    Route::get('/orders/{id}/history', [AdminOrderController::class, 'history']);
     Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
+
+    // Admin Business Audit Logs
+    Route::get('/logs', [AdminLogController::class, 'index']);
+    Route::get('/logs/summary', [AdminLogController::class, 'summary']);
+    Route::get('/logs/{id}', [AdminLogController::class, 'show']);
 });

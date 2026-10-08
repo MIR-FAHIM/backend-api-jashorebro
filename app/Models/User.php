@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -163,6 +164,14 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     public function orders(): HasMany
     {
         return $this->hasMany(Order::class);
+    }
+
+    /**
+     * Get the entity's in-app notifications.
+     */
+    public function notifications(): MorphMany
+    {
+        return $this->morphMany(AppNotification::class, 'notifiable')->latest();
     }
 
     public function isActive(): bool

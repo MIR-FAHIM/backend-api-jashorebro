@@ -7,6 +7,7 @@ use App\Models\Category;
 use App\Models\Product;
 use App\Models\ProductImage;
 use App\Services\AdminProductService;
+use App\Services\LogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -157,7 +158,24 @@ class AdminProductController extends Controller
             }
         }
 
-        $product = $this->productService->createProduct($validated, $request->user()->id);
+        try {
+            $product = $this->productService->createProduct($validated, $request->user()->id);
+        } catch (\Throwable $e) {
+            app(LogService::class)->record(
+                event: 'product.creation_failed',
+                outcome: 'failure',
+                actor: $request->user(),
+                subject: null,
+                metadata: [
+                    'title' => $request->input('title', 'Unknown'),
+                    'sku' => $request->input('sku'),
+                    'failure_reason' => $e->getMessage(),
+                ],
+                message: 'Product creation failed: ' . $e->getMessage()
+            );
+
+            throw $e;
+        }
 
         return response()->json([
             'success' => true,
@@ -252,6 +270,19 @@ class AdminProductController extends Controller
         $product = Product::findOrFail($id);
         $product->update(['status' => 'archived']);
         $product->delete();
+
+        app(LogService::class)->record(
+            event: 'product.archived',
+            outcome: 'success',
+            actor: request()->user(),
+            subject: $product,
+            metadata: [
+                'product_id' => $product->id,
+                'title' => $product->title,
+                'sku' => $product->sku,
+            ],
+            message: "Product '{$product->title}' archived."
+        );
 
         return response()->json([
             'success' => true,

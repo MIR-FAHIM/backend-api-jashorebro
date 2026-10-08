@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\AuthChallenge;
 use App\Models\User;
 use App\Models\UserProfile;
+use App\Services\LogService;
+use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -43,23 +45,40 @@ class AuthController extends Controller
         $normalizedPhone = $this->normalizePhone($request->input('phone', ''));
         $request->merge(['normalized_phone' => $normalizedPhone]);
 
-        $validated = $request->validate([
-            'name' => ['required', 'string', 'max:100'],
-            'username' => [
-                'required',
-                'string',
-                'min:3',
-                'max:30',
-                'alpha_dash',
-                'unique:users,username',
-            ],
-            'normalized_phone' => ['required', 'string', 'min:11', 'max:20', 'unique:users,phone'],
-            'email' => ['nullable', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:6'],
-        ], [
-            'normalized_phone.unique' => 'This mobile number is already registered.',
-            'username.unique' => 'This username handle is already taken.',
-        ]);
+        try {
+            $validated = $request->validate([
+                'name' => ['required', 'string', 'max:100'],
+                'username' => [
+                    'required',
+                    'string',
+                    'min:3',
+                    'max:30',
+                    'alpha_dash',
+                    'unique:users,username',
+                ],
+                'normalized_phone' => ['required', 'string', 'min:11', 'max:20', 'unique:users,phone'],
+                'email' => ['nullable', 'email', 'max:255', 'unique:users,email'],
+                'password' => ['required', 'string', 'min:6'],
+            ], [
+                'normalized_phone.unique' => 'This mobile number is already registered.',
+                'username.unique' => 'This username handle is already taken.',
+            ]);
+        } catch (ValidationException $e) {
+            app(LogService::class)->record(
+                event: 'auth.registration.failed',
+                outcome: 'failure',
+                actor: null,
+                subject: null,
+                metadata: [
+                    'phone' => $normalizedPhone,
+                    'username' => $request->input('username'),
+                    'failure_reason' => 'Validation error',
+                    'failed_fields' => array_keys($e->errors()),
+                ],
+                message: 'User registration failed due to validation errors.'
+            );
+            throw $e;
+        }
 
         $user = User::create([
             'name' => $validated['name'],
@@ -78,6 +97,40 @@ class AuthController extends Controller
         ]);
 
         $token = $user->createToken('jb-mobile-web-token')->plainTextToken;
+
+        app(LogService::class)->record(
+            event: 'auth.registration.succeeded',
+            outcome: 'success',
+            actor: $user,
+            subject: $user,
+            metadata: [
+                'username' => $user->username,
+                'phone' => $user->phone,
+            ],
+            message: "User {$user->username} registered successfully."
+        );
+
+        // In-App Notification: Customer welcome
+        app(NotificationService::class)->sendToUser(
+            user: $user,
+            event: 'auth.customer_welcome',
+            title: 'Welcome to JashoreBro! 🎉',
+            message: 'Your account is ready. Explore curated products and join volume drops across Jashore.',
+            subject: $user,
+            actionUrl: '/profile',
+            audience: 'customer',
+            dedupKey: "reg_welcome_user_{$user->id}"
+        );
+
+        // In-App Notification: Notify authorized admins
+        app(NotificationService::class)->sendToAdmins(
+            event: 'auth.new_customer_registered',
+            title: 'New Customer Registered',
+            message: "{$user->name} (@{$user->username}) has registered on JashoreBro.",
+            subject: $user,
+            actionUrl: '/admin/users',
+            dedupKey: "reg_admin_alert_user_{$user->id}"
+        );
 
         return response()->json([
             'success' => true,
@@ -106,12 +159,36 @@ class AuthController extends Controller
             ->first();
 
         if (! $user || ! Hash::check($request->input('password'), $user->password)) {
+            app(LogService::class)->record(
+                event: 'auth.login.failed',
+                outcome: 'failure',
+                actor: $user ?? null,
+                subject: $user ?? null,
+                metadata: [
+                    'phone' => $normalizedPhone,
+                    'failure_reason' => 'Invalid mobile number or password',
+                ],
+                message: "Failed login attempt for {$normalizedPhone}: Invalid credentials."
+            );
+
             throw ValidationException::withMessages([
                 'phone' => ['The provided mobile number or password is incorrect.'],
             ]);
         }
 
         if ($user->isSuspended()) {
+            app(LogService::class)->record(
+                event: 'auth.login.failed',
+                outcome: 'failure',
+                actor: $user,
+                subject: $user,
+                metadata: [
+                    'phone' => $normalizedPhone,
+                    'failure_reason' => 'Account suspended: ' . ($user->status_reason ?? 'Administrative suspension'),
+                ],
+                message: "Login blocked for {$user->username}: Account is suspended."
+            );
+
             return response()->json([
                 'success' => false,
                 'message' => 'Your account is currently suspended. Reason: ' . ($user->status_reason ?? 'Contact support.'),
@@ -121,6 +198,18 @@ class AuthController extends Controller
         $user->update(['last_login_at' => now()]);
 
         $token = $user->createToken('jb-mobile-web-token')->plainTextToken;
+
+        app(LogService::class)->record(
+            event: 'auth.login.succeeded',
+            outcome: 'success',
+            actor: $user,
+            subject: $user,
+            metadata: [
+                'username' => $user->username,
+                'phone' => $user->phone,
+            ],
+            message: "User {$user->username} logged in successfully."
+        );
 
         return response()->json([
             'success' => true,
@@ -258,7 +347,20 @@ class AuthController extends Controller
      */
     public function logout(Request $request): JsonResponse
     {
-        $request->user()->currentAccessToken()->delete();
+        $user = $request->user();
+        $user->currentAccessToken()->delete();
+
+        app(LogService::class)->record(
+            event: 'auth.logout.succeeded',
+            outcome: 'success',
+            actor: $user,
+            subject: $user,
+            metadata: [
+                'username' => $user->username,
+                'phone' => $user->phone,
+            ],
+            message: "User {$user->username} logged out successfully."
+        );
 
         return response()->json([
             'success' => true,

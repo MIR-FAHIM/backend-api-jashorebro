@@ -411,25 +411,53 @@ Validation failure envelope (HTTP 422):
 ```
 - **Response (201):** Full order record with status `'pending'`, payment_status `'unpaid'`.
 
-### 6.5 Customer Order History & Cancellation
+### 6.5 Customer Order History, Details & Timeline
 - **List Orders:** `GET /api/orders`
 - **Show Order:** `GET /api/orders/{id}`
-- **Cancel Order:** `POST /api/orders/{id}/cancel` (Only allowed if `status === 'pending'`)
+  - Includes `status_histories` array (chronological timeline) with customer-visible fields: `id`, `from_status`, `to_status`, `actor_type`, `reason`, `occurred_at`.
+  - **Security Guarantee:** `internal_note` and staff user details are stripped and NEVER exposed to customers.
+- **Paginated History:** `GET /api/orders/{id}/history`
+- **Cancel Order:** `POST /api/orders/{id}/cancel`
+  - Body: `{ "reason": "Optional customer reason" }`
+  - Permitted only when `status` is `'pending'` or `'awaiting_group'`.
 
 ### 6.6 Admin Orders & Fulfillment Management
 - **List Orders (Admin):** `GET /api/admin/orders`
   - Query Params: `q` (search order number, customer name, phone, address), `status`, `payment_status`, `page`
 - **Show Order Details (Admin):** `GET /api/admin/orders/{id}`
-- **Update Dispatch / Payment Status (Admin):** `PATCH /api/admin/orders/{id}/status`
+  - Includes full `status_histories` array with `actor_type`, `changed_by_user` (name, username), `reason`, `internal_note`, and `event_key`.
+- **Paginated History (Admin):** `GET /api/admin/orders/{id}/history`
+- **Execute Permitted Status Transition (Admin):** `PATCH /api/admin/orders/{id}/status`
   - Body:
   ```json
   {
     "status": "shipped",
     "payment_status": "paid",
-    "notes": "Dispatched via Doratana Hub Rider #4"
+    "reason": "Dispatched via Doratana Hub Rider #4",
+    "internal_note": "Tracking ID: DH-90812, batch 4",
+    "event_key": "optional-idempotency-key"
   }
   ```
-  - Note: Transitions to `cancelled` automatically restock reserved inventory and release group campaign participant counts.
+
+### 6.7 Order Status Transition Rules & State Machine
+Every transition is append-only, validated, and executed in an atomic transaction locking the order (`lockForUpdate`).
+
+| Current Status | Target Status | Permitted Actors | Side Effects / Rules |
+| :--- | :--- | :--- | :--- |
+| `null` (Initial) | `awaiting_group` | `system`, `customer` | Used when joining an active, uncompleted volume drop |
+| `null` (Initial) | `pending` | `system`, `customer`, `admin` | Used for standard orders or unlocked drops |
+| `awaiting_group` | `pending` | `system`, `admin` | Auto-triggered when drop reaches target quota |
+| `awaiting_group` | `cancelled` | `customer`, `admin`, `system` | Releases inventory & campaign reservation |
+| `pending` | `processing` | `admin` | Merchant begins fulfillment |
+| `pending` | `cancelled` | `customer`, `admin`, `system` | Customer cancellation allowed online |
+| `processing` | `shipped` | `admin` | Dispatched to courier / local hub |
+| `processing` | `pending` | `admin` | Correction regression (requires explanation `reason`) |
+| `processing` | `cancelled` | `admin`, `system` | Restocks inventory |
+| `shipped` | `delivered` | `admin` | Successfully delivered to customer |
+| `shipped` | `processing` | `admin` | Correction regression (requires explanation `reason`) |
+| `shipped` | `cancelled` | `admin`, `system` | Restocks inventory |
+| `delivered` | *Terminal* | — | No further transitions |
+| `cancelled` | *Terminal* | — | No further transitions |
 
 ---
 
@@ -438,3 +466,117 @@ Validation failure envelope (HTTP 422):
 - **403 Forbidden:** Authenticated user is not an admin on admin routes, or customer attempting access to another customer's orders.
 - **422 Unprocessable Entity:** Validation errors with field-keyed array of messages.
 - **409 Conflict:** Stock exhausted or group campaign capacity reached.
+
+---
+
+## 8. Business Log Management APIs (Centralized Audit Trail)
+
+### 8.1 Architecture & Design
+- **Append-Only Immutability:** Business logs in `business_logs` have no `updated_at` column and no edit/delete endpoints.
+- **Strict Separation:** `order_status_histories` powers customer-facing order timelines; `business_logs` powers administrative audit, compliance, and governance reporting.
+- **Transactional Consistency:**
+  - Successful business actions write their log record within the active database transaction (`DB::transaction`). If the transaction aborts/rolls back, the success log is automatically removed.
+  - Failures are captured in external `try ... catch` blocks outside the transaction, persisting the failure reason safely.
+- **Security & Privacy:** Passwords, tokens, OTPs, secret keys, credit card credentials, and raw request bodies are explicitly blocked via strict field allowlisting and sanitization.
+- **Traceability:** Every log records a correlation `request_id` (from incoming `X-Request-ID` or server-generated UUID), client `ip_address`, `user_agent`, actor ID, captured actor role at the moment of the event, polymorphic `subject_type` and `subject_id`, sanitized JSON `metadata`, and `occurred_at`.
+
+### 8.2 Logged Business Events
+- **Authentication:**
+  - `auth.login.succeeded`: User authenticated successfully.
+  - `auth.login.failed`: Login rejected (invalid credentials or account suspended).
+  - `auth.registration.succeeded`: New customer created.
+  - `auth.registration.failed`: Registration validation failed.
+  - `auth.logout.succeeded`: User token revoked.
+- **Orders:**
+  - `order.created`: Order placed and inventory reserved.
+  - `order.status_changed`: State transition executed.
+  - `order.cancelled`: Order cancelled and inventory restocked.
+  - `order.creation_failed`: Checkout failed due to stock depletion or campaign limits.
+- **Products:**
+  - `product.created`: New product draft or item added.
+  - `product.updated`: Product specifications, pricing, or variants edited.
+  - `product.published`: Product published to customer catalog.
+  - `product.archived`: Product soft-deleted/archived.
+  - `product.creation_failed`: Product validation error during store.
+
+### 8.3 Endpoints
+All endpoints require `Authorization: Bearer <token>` and administrative role (`admin` or `super_admin`).
+
+#### `GET /api/admin/logs`
+List filterable, paginated audit logs.
+- **Query Parameters:**
+  - `category`: `authentication` | `order` | `product` | `all`
+  - `event`: e.g. `order.created`, `auth.login.failed`
+  - `outcome`: `success` | `failure` | `all`
+  - `actor_id`: Numeric user ID
+  - `actor_role`: `admin` | `customer` | `system` | `anonymous` | `all`
+  - `subject_type`: `order` | `product` | `user` or FQCN
+  - `subject_id`: Numeric entity ID
+  - `request_id`: Correlation UUID
+  - `start_date`: ISO datetime or YYYY-MM-DD
+  - `end_date`: ISO datetime or YYYY-MM-DD
+  - `q`: Free-text search matching message, event, request ID, IP
+  - `page`: Page number (default: 1)
+  - `per_page`: Items per page (default: 20, max: 100)
+
+#### `GET /api/admin/logs/summary`
+Get aggregated event counts and success/failure breakdown matching current query filters.
+- **Query Parameters:** Supports the same filter parameters as `GET /api/admin/logs`.
+
+#### `GET /api/admin/logs/{id}`
+Retrieve complete detail of a specific business audit log including loaded relations.
+
+---
+
+## 9. In-App Notification System APIs
+
+### 9.1 Architecture & Design
+- **Database Notifications:** Implemented using Laravel's database notification schema (`notifications` table) with custom first-class indexed columns (`audience`, `event`, `title`, `message`, `subject_type`, `subject_id`, `action_url`, `dedup_key`, `read_at`) and JSON `data`.
+- **Audience Context Isolation:** Notifications are categorized as `customer` or `admin`. Queries and unread counts can be filtered by `context=customer` or `context=admin`.
+- **Strict Recipient Scoping:** Every notification query, count, and read mutation is strictly scoped to `$request->user()->notifications()`. Admin privileges never expose other users' private notification inboxes.
+- **Transactional Safety:** When business actions execute inside a database transaction (`DB::transaction`), notifications are dispatched via `DB::afterCommit(...)`. Rolled-back transactions produce NO notifications.
+- **Idempotency & Deduplication:** Notifications accept a deterministic `dedup_key` (e.g. `order_created_cust_{id}`). Duplicate triggers or retries never generate duplicate notification records.
+- **Action Destinations:** Action routes are resolved server-side (e.g. `/orders/{id}` for customers, `/admin/orders` for admins, `/admin/catalog` for products).
+
+### 9.2 Notification Events Matrix
+
+| Domain | Event | Target Audience | Title / Message | Destination |
+| :--- | :--- | :--- | :--- | :--- |
+| **Auth** | `auth.customer_welcome` | Customer | Welcome to JashoreBro! 🎉 | `/profile` |
+| **Auth** | `auth.new_customer_registered` | Admin | New Customer Registered | `/admin/users` |
+| **Orders** | `order.created` | Customer | Order Placed: #{order_number} | `/orders/{id}` |
+| **Orders** | `order.created_admin` | Admin | New Order: #{order_number} | `/admin/orders` |
+| **Orders** | `order.status_updated` | Customer | Order #{order_number} Update | `/orders/{id}` |
+| **Orders** | `order.cancelled` | Customer | Order #{order_number} Cancelled | `/orders/{id}` |
+| **Orders** | `order.cancelled_admin` | Admin | Order #{order_number} Cancelled | `/admin/orders` |
+| **Products** | `product.created_admin` | Admin | New Product Draft Added | `/admin/catalog` |
+| **Products** | `product.published_admin` | Admin | Product Published | `/admin/catalog` |
+| **Group Buy** | `group_buy.joined` | Customer | Joined Drop: {title} 🎯 | `/orders/{id}` |
+| **Group Buy** | `group_buy.unlocked` | Customer | Drop Goal Unlocked! 🎉 | `/orders` |
+| **Group Buy** | `group_buy.target_reached_admin` | Admin | Drop Goal Achieved: {title} | `/admin/drops` |
+| **Group Buy** | `group_buy.cancelled` | Customer | Volume Drop Update: {title} | `/orders` |
+
+### 9.3 Endpoints
+
+#### `GET /api/notifications`
+Get paginated in-app notifications for the authenticated user.
+- **Headers:** `Authorization: Bearer <token>`
+- **Query Parameters:**
+  - `context`: `customer` | `admin` (default: `customer`)
+  - `filter`: `all` | `unread` (default: `all`)
+  - `page`: Page number (default: 1)
+  - `per_page`: Items per page (default: 15, max: 50)
+
+#### `GET /api/notifications/unread-count`
+Get real-time unread notification badge count.
+- **Headers:** `Authorization: Bearer <token>`
+- **Query Parameters:** `context`: `customer` | `admin`
+
+#### `PATCH /api/notifications/{id}/read`
+Idempotently mark a single notification as read.
+- **Headers:** `Authorization: Bearer <token>`
+
+#### `POST /api/notifications/mark-all-read`
+Mark all unread notifications in the specified context as read.
+- **Headers:** `Authorization: Bearer <token>`
+- **Body:** `{ "context": "customer" }` (or `"admin"`)

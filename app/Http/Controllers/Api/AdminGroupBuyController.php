@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\GroupBuyCampaign;
 use App\Models\GroupBuyParticipant;
 use App\Models\Product;
+use App\Services\OrderStatusService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,6 +15,10 @@ use Illuminate\Validation\ValidationException;
 
 class AdminGroupBuyController extends Controller
 {
+    public function __construct(
+        protected OrderStatusService $orderStatusService
+    ) {}
+
     /**
      * List all drop campaigns with progress metrics.
      */
@@ -166,24 +171,17 @@ class AdminGroupBuyController extends Controller
     {
         $campaign = GroupBuyCampaign::findOrFail($id);
 
-        $request->validate([
-            'cancellation_reason' => 'nullable|string|max:255',
-        ]);
+        $reason = $request->input('cancellation_reason', 'Cancelled by administrator');
 
-        DB::transaction(function () use ($campaign, $request) {
+        DB::transaction(function () use ($campaign, $reason) {
             $campaign->update([
                 'status' => 'cancelled',
                 'cancelled_at' => now(),
-                'cancellation_reason' => $request->input('cancellation_reason', 'Cancelled by administrator'),
+                'cancellation_reason' => $reason,
             ]);
 
-            // Release reservations
-            GroupBuyParticipant::where('campaign_id', $campaign->id)
-                ->where('status', 'reserved')
-                ->update([
-                    'status' => 'released',
-                    'cancelled_at' => now(),
-                ]);
+            // Release participant reservations and transition awaiting orders to cancelled
+            $this->orderStatusService->handleGroupCampaignExpired($campaign, "Campaign cancelled: {$reason}");
         });
 
         return response()->json([

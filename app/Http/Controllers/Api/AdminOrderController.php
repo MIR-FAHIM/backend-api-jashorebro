@@ -3,16 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\GroupBuyParticipant;
 use App\Models\Order;
-use App\Models\Product;
-use App\Models\ProductVariant;
+use App\Services\OrderStatusService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class AdminOrderController extends Controller
 {
+    public function __construct(
+        protected OrderStatusService $orderStatusService
+    ) {}
+
     /**
      * List all customer orders with filtering and pagination for admin dispatch.
      */
@@ -23,6 +24,7 @@ class AdminOrderController extends Controller
             'seller:id,store_name',
             'items.product.primaryImage',
             'items.variant',
+            'latestStatusHistory',
         ]);
 
         if ($search = $request->string('q')->trim()->value()) {
@@ -60,7 +62,7 @@ class AdminOrderController extends Controller
     }
 
     /**
-     * Show single order details for administration.
+     * Show single order details with full administrative timeline.
      */
     public function show(int $id): JsonResponse
     {
@@ -70,6 +72,7 @@ class AdminOrderController extends Controller
             'items.product.primaryImage',
             'items.variant',
             'groupParticipants.campaign',
+            'statusHistories.changedByUser:id,name,username',
         ])->findOrFail($id);
 
         return response()->json([
@@ -79,59 +82,71 @@ class AdminOrderController extends Controller
     }
 
     /**
-     * Update order dispatch or payment status.
+     * Paginated status history access for administrators with internal notes.
+     */
+    public function history(int $id): JsonResponse
+    {
+        $order = Order::findOrFail($id);
+
+        $histories = $order->statusHistories()
+            ->with('changedByUser:id,name,username')
+            ->orderBy('occurred_at', 'asc')
+            ->orderBy('id', 'asc')
+            ->paginate(20);
+
+        return response()->json([
+            'success' => true,
+            'data' => $histories->getCollection(),
+            'meta' => [
+                'current_page' => $histories->currentPage(),
+                'last_page' => $histories->lastPage(),
+                'total' => $histories->total(),
+            ],
+        ]);
+    }
+
+    /**
+     * Update order status and/or payment status via OrderStatusService.
      */
     public function updateStatus(Request $request, int $id): JsonResponse
     {
         $validated = $request->validate([
-            'status' => 'sometimes|required|in:pending,processing,shipped,delivered,cancelled',
+            'status' => 'sometimes|required|in:awaiting_group,pending,processing,shipped,delivered,cancelled',
             'payment_status' => 'sometimes|required|in:unpaid,paid,refunded',
-            'notes' => 'nullable|string|max:500',
+            'reason' => 'nullable|string|max:500',
+            'internal_note' => 'nullable|string|max:500',
+            'event_key' => 'nullable|string|max:100',
         ]);
 
-        $order = Order::with('items')->findOrFail($id);
+        $order = Order::findOrFail($id);
 
-        DB::transaction(function () use ($validated, $order, $request) {
-            $prevStatus = $order->status;
-            $newStatus = $validated['status'] ?? $prevStatus;
+        // 1. Process fulfillment status transition through OrderStatusService
+        if (isset($validated['status'])) {
+            $this->orderStatusService->transition(
+                orderOrId: $order,
+                toStatus: $validated['status'],
+                actorType: 'admin',
+                actor: $request->user(),
+                reason: $validated['reason'] ?? null,
+                internalNote: $validated['internal_note'] ?? null,
+                eventKey: $validated['event_key'] ?? null
+            );
+        }
 
-            // Handle cancellation transition
-            if ($newStatus === 'cancelled' && $prevStatus !== 'cancelled') {
-                $order->cancelled_at = now();
-                $order->cancellation_reason = $validated['notes'] ?? 'Cancelled by administrator';
-
-                // Release stock back
-                foreach ($order->items as $item) {
-                    if ($item->product_variant_id) {
-                        ProductVariant::where('id', $item->product_variant_id)->increment('stock_quantity', $item->quantity);
-                    }
-                    Product::where('id', $item->product_id)->increment('stock_quantity', $item->quantity);
-                }
-
-                // Release group buy reservations
-                GroupBuyParticipant::where('order_id', $order->id)->update([
-                    'status' => 'cancelled',
-                    'cancelled_at' => now(),
-                ]);
-            }
-
-            if (isset($validated['status'])) {
-                $order->status = $validated['status'];
-            }
-            if (isset($validated['payment_status'])) {
-                $order->payment_status = $validated['payment_status'];
-            }
-            if (isset($validated['notes'])) {
-                $order->notes = $validated['notes'];
-            }
-
+        // 2. Process separate payment status update
+        if (isset($validated['payment_status'])) {
+            $order->payment_status = $validated['payment_status'];
             $order->save();
-        });
+        }
 
         return response()->json([
             'success' => true,
-            'message' => "Order #{$order->order_number} status updated successfully.",
-            'data' => $order->fresh(['items', 'seller:id,store_name']),
+            'message' => "Order #{$order->order_number} updated successfully.",
+            'data' => $order->fresh([
+                'items',
+                'seller:id,store_name',
+                'statusHistories.changedByUser:id,name,username',
+            ]),
         ]);
     }
 }

@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Order extends Model
 {
@@ -15,7 +16,7 @@ class Order extends Model
         'order_number',
         'user_id',
         'seller_id',
-        'status', // pending, processing, shipped, delivered, cancelled
+        'status', // awaiting_group, pending, processing, shipped, delivered, cancelled
         'payment_status', // unpaid, paid, refunded
         'payment_method', // cod, bkash, nagad
         'subtotal',
@@ -61,5 +62,15 @@ class Order extends Model
     public function groupParticipants(): HasMany
     {
         return $this->hasMany(GroupBuyParticipant::class);
+    }
+
+    public function statusHistories(): HasMany
+    {
+        return $this->hasMany(OrderStatusHistory::class)->orderBy('occurred_at', 'asc')->orderBy('id', 'asc');
+    }
+
+    public function latestStatusHistory(): HasOne
+    {
+        return $this->hasOne(OrderStatusHistory::class)->latestOfMany('occurred_at');
     }
 }
