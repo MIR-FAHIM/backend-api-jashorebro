@@ -113,6 +113,9 @@ class LogService
         if (str_starts_with($event, 'address.')) {
             return 'address';
         }
+        if (str_starts_with($event, 'shop.') || str_starts_with($event, 'community.') || str_starts_with($event, 'payout.')) {
+            return 'community';
+        }
 
         return explode('.', $event)[0] ?? 'general';
     }

@@ -28,7 +28,10 @@ class PosApiTest extends TestCase
     {
         parent::setUp();
 
-        $adminRole = Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
+        $adminRole = Role::firstOrCreate(
+            ['name' => 'admin'],
+            ['display_name' => 'Administrator']
+        );
 
         $this->adminUser = User::factory()->create([
             'name' => 'Admin Operator',

@@ -82,6 +82,14 @@ class Product extends Model
         'max_order_quantity',
         'is_normal_purchase_enabled',
         'is_group_buy_enabled',
+        'is_recommendation_enabled',
+        'recommendation_commission',
+        'is_community_shop_enabled',
+        'supplier_allocation_price',
+        'min_selling_price',
+        'max_selling_price',
+        'platform_fee_percent',
+        'is_group_drop_enabled',
         'is_featured',
         'is_new_arrival',
         'is_bestseller',
@@ -117,6 +125,14 @@ class Product extends Model
             'max_order_quantity' => 'integer',
             'is_normal_purchase_enabled' => 'boolean',
             'is_group_buy_enabled' => 'boolean',
+            'is_recommendation_enabled' => 'boolean',
+            'recommendation_commission' => 'float',
+            'is_community_shop_enabled' => 'boolean',
+            'supplier_allocation_price' => 'float',
+            'min_selling_price' => 'float',
+            'max_selling_price' => 'float',
+            'platform_fee_percent' => 'float',
+            'is_group_drop_enabled' => 'boolean',
             'is_featured' => 'boolean',
             'is_new_arrival' => 'boolean',
             'is_bestseller' => 'boolean',
@@ -241,6 +257,16 @@ class Product extends Model
         }
 
         return (int) $this->stock_quantity;
+    }
+
+    public function userPicks(): HasMany
+    {
+        return $this->hasMany(UserPick::class);
+    }
+
+    public function shopListings(): HasMany
+    {
+        return $this->hasMany(ShopListing::class);
     }
 
     /**

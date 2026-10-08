@@ -27,12 +27,18 @@ class GroupBuyCampaign extends Model
         'cancelled_at',
         'cancellation_reason',
         'created_by',
+        'organizer_user_id',
+        'originating_shop_id',
+        'organizer_commission_per_unit',
+        'supplier_allocation_price',
     ];
 
     protected function casts(): array
     {
         return [
             'group_price' => 'float',
+            'organizer_commission_per_unit' => 'float',
+            'supplier_allocation_price' => 'float',
             'target_participants' => 'integer',
             'max_participants' => 'integer',
             'quantity_limit_per_customer' => 'integer',
@@ -56,6 +62,16 @@ class GroupBuyCampaign extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function organizer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'organizer_user_id');
+    }
+
+    public function originatingShop(): BelongsTo
+    {
+        return $this->belongsTo(CommunityShop::class, 'originating_shop_id');
     }
 
     public function participants(): HasMany

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AdminAttributeController;
+use App\Http\Controllers\Api\AdminCommunityController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminGroupBuyController;
 use App\Http\Controllers\Api\AdminLogController;
@@ -10,11 +11,17 @@ use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AddressController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\CommunityDropController;
+use App\Http\Controllers\Api\CommunityShopController;
+use App\Http\Controllers\Api\EarningsController;
 use App\Http\Controllers\Api\FriendController;
+use App\Http\Controllers\Api\LeaderboardController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\SellerController;
+use App\Http\Controllers\Api\UserFollowController;
+use App\Http\Controllers\Api\UserPickController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -111,7 +118,51 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
     Route::post('/notifications/mark-all-read', [NotificationController::class, 'markAllAsRead']);
     Route::get('/notifications/{id}', [NotificationController::class, 'show']);
+
+    // My Picks (Recommender Curation)
+    Route::get('/picks/my', [UserPickController::class, 'index']);
+    Route::post('/picks', [UserPickController::class, 'store']);
+    Route::put('/picks/{id}', [UserPickController::class, 'update']);
+    Route::delete('/picks/{id}', [UserPickController::class, 'destroy']);
+
+    // My Shop (Community Storefront Studio)
+    Route::get('/shops/my', [CommunityShopController::class, 'myShop']);
+    Route::post('/shops', [CommunityShopController::class, 'store']);
+    Route::put('/shops/my', [CommunityShopController::class, 'update']);
+    Route::get('/shops/my/listings', [CommunityShopController::class, 'listings']);
+    Route::post('/shops/my/listings', [CommunityShopController::class, 'storeListing']);
+    Route::put('/shops/my/listings/{id}', [CommunityShopController::class, 'updateListing']);
+    Route::delete('/shops/my/listings/{id}', [CommunityShopController::class, 'destroyListing']);
+    Route::get('/shops/my/sales', [CommunityShopController::class, 'sales']);
+
+    // Community Group Drops
+    Route::get('/community-drops/eligible-products', [CommunityDropController::class, 'eligibleProducts']);
+    Route::get('/community-drops/my', [CommunityDropController::class, 'myDrops']);
+    Route::post('/community-drops', [CommunityDropController::class, 'store']);
+
+    // Earnings & Payout Ledger
+    Route::get('/earnings/summary', [EarningsController::class, 'summary']);
+    Route::get('/earnings/ledger', [EarningsController::class, 'ledger']);
+    Route::post('/earnings/payouts', [EarningsController::class, 'requestPayout']);
+    Route::get('/earnings/payouts', [EarningsController::class, 'payouts']);
+
+    // One-Way Follows
+    Route::post('/follows/{userId}', [UserFollowController::class, 'follow']);
+    Route::delete('/follows/{userId}', [UserFollowController::class, 'unfollow']);
+    Route::get('/follows/{userId}/status', [UserFollowController::class, 'status']);
 });
+
+/*
+|--------------------------------------------------------------------------
+| Public Community Discovery & Leaderboards Routes
+|--------------------------------------------------------------------------
+*/
+Route::get('/picks/user/{username}', [UserPickController::class, 'userPicks']);
+Route::get('/picks/code/{code}', [UserPickController::class, 'lookupCode']);
+Route::get('/shops/slug/{slug}', [CommunityShopController::class, 'showPublic']);
+Route::get('/follows/{userId}/followers', [UserFollowController::class, 'followers']);
+Route::get('/follows/{userId}/following', [UserFollowController::class, 'following']);
+Route::get('/leaderboards', [LeaderboardController::class, 'index']);
 
 /*
 |--------------------------------------------------------------------------
@@ -173,4 +224,11 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::post('/pos/quote', [AdminPosController::class, 'quote']);
     Route::post('/pos/orders', [AdminPosController::class, 'store']);
     Route::get('/pos/orders/{id}', [AdminPosController::class, 'show']);
+
+    // Admin Community Commerce Oversight
+    Route::get('/community/shops', [AdminCommunityController::class, 'shops']);
+    Route::patch('/community/shops/{id}/status', [AdminCommunityController::class, 'updateShopStatus']);
+    Route::get('/community/payouts', [AdminCommunityController::class, 'payouts']);
+    Route::post('/community/payouts/{id}/process', [AdminCommunityController::class, 'processPayout']);
+    Route::get('/community/settlement-report', [AdminCommunityController::class, 'settlementReport']);
 });

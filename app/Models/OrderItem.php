@@ -23,6 +23,19 @@ class OrderItem extends Model
         'unit_price',
         'quantity',
         'line_total',
+        // Community Commerce Attribution & Financial Allocations
+        'earning_model', // none, community_shop, recommendation, group_drop
+        'community_shop_id',
+        'shop_listing_id',
+        'recommender_id',
+        'recommendation_code',
+        'beneficiary_user_id',
+        'supplier_allocation_price',
+        'gross_markup',
+        'platform_fee',
+        'seller_earning',
+        'commission_amount',
+        'commercial_terms_snapshot',
     ];
 
     protected function casts(): array
@@ -32,6 +45,12 @@ class OrderItem extends Model
             'unit_price' => 'float',
             'quantity' => 'integer',
             'line_total' => 'float',
+            'supplier_allocation_price' => 'float',
+            'gross_markup' => 'float',
+            'platform_fee' => 'float',
+            'seller_earning' => 'float',
+            'commission_amount' => 'float',
+            'commercial_terms_snapshot' => 'array',
         ];
     }
 
@@ -53,5 +72,25 @@ class OrderItem extends Model
     public function campaign(): BelongsTo
     {
         return $this->belongsTo(GroupBuyCampaign::class, 'group_buy_campaign_id');
+    }
+
+    public function communityShop(): BelongsTo
+    {
+        return $this->belongsTo(CommunityShop::class, 'community_shop_id');
+    }
+
+    public function shopListing(): BelongsTo
+    {
+        return $this->belongsTo(ShopListing::class, 'shop_listing_id');
+    }
+
+    public function recommender(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'recommender_id');
+    }
+
+    public function beneficiary(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'beneficiary_user_id');
     }
 }

@@ -118,6 +118,63 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     }
 
     /**
+     * Curated product recommendations (My Picks).
+     */
+    public function picks(): HasMany
+    {
+        return $this->hasMany(UserPick::class);
+    }
+
+    /**
+     * Personal community storefront.
+     */
+    public function communityShop(): HasOne
+    {
+        return $this->hasOne(CommunityShop::class);
+    }
+
+    /**
+     * Append-only earnings ledger transactions.
+     */
+    public function earningsLedgers(): HasMany
+    {
+        return $this->hasMany(EarningsLedger::class);
+    }
+
+    /**
+     * Payout withdrawal requests.
+     */
+    public function payoutRequests(): HasMany
+    {
+        return $this->hasMany(PayoutRequest::class);
+    }
+
+    /**
+     * Other users who follow this user.
+     */
+    public function followers(): HasMany
+    {
+        return $this->hasMany(UserFollow::class, 'followed_user_id');
+    }
+
+    /**
+     * Users that this user is following.
+     */
+    public function following(): HasMany
+    {
+        return $this->hasMany(UserFollow::class, 'follower_id');
+    }
+
+    public function isCommunitySeller(): bool
+    {
+        if ($this->relationLoaded('communityShop')) {
+            return $this->communityShop && in_array($this->communityShop->status, ['active', 'verified']);
+        }
+
+        return $this->communityShop()->whereIn('status', ['active', 'verified'])->exists();
+    }
+
+    /**
      * Platform administrative/staff roles.
      */
     public function roles(): BelongsToMany

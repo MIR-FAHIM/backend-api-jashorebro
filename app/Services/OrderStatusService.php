@@ -221,6 +221,13 @@ class OrderStatusService
                 );
             }
 
+            // Community commerce financial ledger hook
+            if ($toStatus === 'delivered') {
+                app(\App\Services\EarningsService::class)->releaseEarningsForOrder($order);
+            } elseif ($isCancelled) {
+                app(\App\Services\EarningsService::class)->reverseEarningsForOrder($order, $history->reason ?? 'Order cancelled');
+            }
+
             return $history;
         });
     }

@@ -737,3 +737,83 @@ In `GET /api/admin/orders`:
 - Orders table renders a dedicated `POS` badge for in-store transactions.
 - Order details modal displays tender breakdown (amount received, change returned) and discount reason.
 
+
+---
+
+## 12. Community Commerce Engine APIs
+
+### 12.1 Concept & Capability Architecture
+"Every user can turn their community into a small online business: Discover → Pick → Sell → Start a Drop → Earn."
+
+- **Cumulative Account Capabilities:** A single user account can simultaneously act as a **Customer** (purchases items), a **Recommender** (curates picks & shares referral links for fixed commissions), a **Community Seller** (operates a personal branded storefront at `/shop/:slug`), and a **Drop Organizer** (initiates volume buying campaigns).
+- **Master Catalog & Central Inventory:** Community storefronts reference master catalog products/variants directly (`shop_listings`). Inventory is tracked once at the platform/warehouse level; sellers never duplicate products or hold stock.
+- **Fulfillment & Trust Guarantee:** JashoreBro handles warehousing, packaging, shipping, delivery, and cash/bKash collections directly. Community sellers bear zero shipping liability.
+- **Commercial Formulas & Bounds:**
+  - Master catalog products define:
+    - $S$: `supplier_allocation_price` (wholesale base allocated to artisan producer/supplier)
+    - $P_{min}$: `min_selling_price` (minimum retail floor price)
+    - $P_{max}$: `max_selling_price` (maximum retail ceiling price)
+    - $fee\%$: `platform_fee_percent` (retained by platform on gross markup, default 5%)
+    - $C$: `recommendation_commission` (fixed unit amount for recommenders)
+  - When seller sets custom retail price $P$ ($P_{min} \le P \le P_{max}$):
+    - Gross Markup: $M = P - S$
+    - Platform Fee: $F = M \times \frac{fee\%}{100}$
+    - Seller Net Earning: $E = M - F$
+- **Line-Item Attribution Precedence:**
+  1. **Group Drop Campaign:** (`earning_model: group_drop_organizer`)
+  2. **Community Storefront Listing:** (`earning_model: community_shop`)
+  3. **7-Day Recommendation Code:** (`earning_model: recommendation`, referral code `REC-U{id}-P{id}`)
+  4. **Direct Catalog Sale:** (`earning_model: none`)
+- **Self-Purchase Protection:** If buyer user ID equals the beneficiary user ID, community commissions and markups are strictly zeroed server-side.
+- **Financial Ledger & Balances:**
+  - Append-only ledger in `earnings_ledgers`.
+  - Balances: `pending` (held during transit) $\rightarrow$ automatically released to `available` when order status transitions to `delivered`.
+  - Cancellations/refunds: automatically revert pending earnings to `reversed`.
+  - Zero balances are strictly displayed as `৳0.00` (no mock data).
+
+### 12.2 API Endpoints Matrix
+
+#### A. My Picks (Curated Product Recommendations)
+- `GET /api/community/picks`: Retrieve authenticated user's picks list.
+- `POST /api/community/picks/{productId}`: Curate product to user's picks. Body: `{ personal_caption, is_featured }`. Returns assigned `recommendation_code` (`REC-U{id}-P{id}`).
+- `DELETE /api/community/picks/{pickId}`: Remove product from user's picks.
+- `GET /api/community/users/{userId}/picks`: Publicly view another user's curated picks.
+
+#### B. Community Storefront Studio & Public Store
+- `GET /api/community/shop/me`: Authenticated user's storefront details and listings.
+- `POST /api/community/shop`: Initialize new community store. Body: `{ name, bio, logo_url }`.
+- `PUT /api/community/shop`: Update store branding, bio, and logo.
+- `GET /api/community/shop/{slug}`: Public storefront by slug. Returns store profile, verified fulfillment guarantee, active listings with seller custom prices, follower count, and follow state.
+- `POST /api/community/shop/listings`: Add product to storefront. Body: `{ product_id, selling_price, curator_note }`. Validates $P_{min} \le selling\_price \le P_{max}$.
+- `PUT /api/community/shop/listings/{id}`: Update listing price or active status. Body: `{ selling_price, curator_note, is_active }`.
+- `DELETE /api/community/shop/listings/{id}`: Remove product from storefront.
+- `GET /api/community/shop/sales`: Attributed orders for seller. Privacy-safe: excludes buyer name, telephone, delivery address, and payment credentials.
+
+#### C. Community Volume Drops
+- `POST /api/community/drops`: Launch organizer group buy campaign for permitted products (`is_group_drop_enabled`). Body: `{ product_id, title, target_participants, group_price, duration_hours }`.
+- `GET /api/community/drops/{id}`: View active group campaign details and participant progress.
+
+#### D. Earnings Wallet & Payouts
+- `GET /api/community/earnings/balance`: Returns real financial balances (`pending`, `available`, `reserved_for_payout`, `paid`).
+- `GET /api/community/earnings/ledger`: Paginated append-only ledger transaction history with source models and order references.
+- `POST /api/community/earnings/payouts`: Submit withdrawal request. Body: `{ amount, payout_method, account_identifier }`. Moves funds to `reserved_for_payout`.
+- `GET /api/community/earnings/payouts`: History of user payout requests with disbursement status.
+
+#### E. Social Graph
+- `POST /api/community/users/{userId}/follow`: One-way follow a community seller.
+- `DELETE /api/community/users/{userId}/follow`: Unfollow a community seller.
+- `GET /api/community/users/{userId}/followers`: List followers of a community seller.
+
+#### F. Community Leaderboards
+- `GET /api/community/leaderboards/top-sellers`: Top community storefronts by delivered GMV and net earnings.
+- `GET /api/community/leaderboards/top-curators`: Top product recommenders by delivered units and commissions.
+- `GET /api/community/leaderboards/top-organizers`: Top group drop organizers by fulfilled volume campaigns.
+
+#### G. Admin Community Oversight
+- `GET /api/admin/community/shops`: List and search all community storefronts with listing counts and statuses.
+- `PATCH /api/admin/community/shops/{id}/status`: Moderate store status (`active` | `suspended`).
+- `GET /api/admin/community/payouts`: Review pending and historical withdrawal requests. Filter by status (`requested`, `processing`, `paid`, `rejected`).
+- `PATCH /api/admin/community/payouts/{id}`: Process withdrawal request:
+  - `{ action: "paid", transaction_reference: "TRX123" }`: Finalizes payout and records audit reference.
+  - `{ action: "rejected", rejection_reason: "..." }`: Rejects request and refunds reserved balance back to available balance.
+- `GET /api/admin/community/settlement`: Aggregate GMV, supplier allocations, platform fees retained, seller margins, and pending vs available liability balances.

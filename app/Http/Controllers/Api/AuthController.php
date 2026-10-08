@@ -334,10 +334,15 @@ class AuthController extends Controller
      */
     public function me(Request $request): JsonResponse
     {
+        $user = $request->user()->load('profile', 'roles', 'addresses', 'communityShop');
+
         return response()->json([
             'success' => true,
             'data' => [
-                'user' => $request->user()->load('profile', 'roles', 'addresses'),
+                'user' => array_merge($user->toArray(), [
+                    'is_community_seller' => $user->isCommunitySeller(),
+                    'has_shop' => $user->communityShop !== null,
+                ]),
             ],
         ]);
     }

@@ -530,8 +530,9 @@ class AdminPosController extends Controller
             // If immediate paid sale, transition status to processing
             if ($paymentStatus === 'paid') {
                 $this->orderStatusService->transition(
-                    order: $newOrder,
+                    orderOrId: $newOrder,
                     toStatus: 'processing',
+                    actorType: 'admin',
                     actor: $admin,
                     reason: "In-store payment completed via {$paymentMethod}."
                 );

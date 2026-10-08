@@ -9,6 +9,8 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Services\CommunityCommercialService;
+use App\Services\EarningsService;
 use App\Services\LogService;
 use App\Services\NotificationService;
 use App\Services\OrderStatusService;
@@ -21,7 +23,9 @@ use Illuminate\Validation\ValidationException;
 class OrderController extends Controller
 {
     public function __construct(
-        protected OrderStatusService $orderStatusService
+        protected OrderStatusService $orderStatusService,
+        protected CommunityCommercialService $commercialService,
+        protected EarningsService $earningsService
     ) {}
 
     /**
@@ -36,12 +40,17 @@ class OrderController extends Controller
             'items.*.quantity' => 'required|integer|min:1',
             'items.*.purchase_mode' => 'required|in:normal,group_buy',
             'items.*.campaign_id' => 'nullable|exists:group_buy_campaigns,id',
+            'items.*.shop_listing_id' => 'nullable|exists:shop_listings,id',
+            'items.*.community_shop_id' => 'nullable|exists:community_shops,id',
+            'items.*.recommendation_code' => 'nullable|string',
+            'items.*.recommender_id' => 'nullable|exists:users,id',
         ]);
 
         $itemsQuote = [];
         $subtotal = 0.00;
         $maxShippingCharge = 0.00;
         $allFreeShipping = true;
+        $buyer = $request->user();
 
         foreach ($request->input('items') as $line) {
             $product = Product::with('activeVariants')->findOrFail($line['product_id']);
@@ -56,6 +65,9 @@ class OrderController extends Controller
                     'items' => ["Insufficient stock for '{$product->title}'. Available: {$availableStock}"],
                 ]);
             }
+
+            // Resolve attribution & commercial pricing
+            $attrib = $this->commercialService->resolveLineAttribution($line, $product, $variant, $buyer);
 
             // Price determination
             if ($mode === 'group_buy') {
@@ -72,15 +84,15 @@ class OrderController extends Controller
                 }
                 $unitPrice = (float) $campaign->group_price;
             } else {
-                if (! $product->is_normal_purchase_enabled) {
+                if (! $product->is_normal_purchase_enabled && $attrib['earning_model'] !== 'community_shop') {
                     throw ValidationException::withMessages([
                         'items' => ["Direct purchase is currently disabled for '{$product->title}'."],
                     ]);
                 }
-                $unitPrice = $variant ? (float) $variant->effective_price : (float) $product->base_price;
+                $unitPrice = (float) $attrib['unit_price'];
             }
 
-            $lineTotal = $unitPrice * $quantity;
+            $lineTotal = round($unitPrice * $quantity, 2);
             $subtotal += $lineTotal;
 
             if (! $product->is_free_shipping) {
@@ -94,9 +106,12 @@ class OrderController extends Controller
                 'variant_id' => $variant?->id,
                 'variant_name' => $variant?->name,
                 'purchase_mode' => $mode,
+                'earning_model' => $attrib['earning_model'],
                 'unit_price' => $unitPrice,
                 'quantity' => $quantity,
                 'line_total' => $lineTotal,
+                'seller_earning_preview' => $attrib['seller_earning'],
+                'commission_preview' => $attrib['commission_amount'],
             ];
         }
 
@@ -131,6 +146,10 @@ class OrderController extends Controller
                 'items.*.quantity' => 'required|integer|min:1',
                 'items.*.purchase_mode' => 'required|in:normal,group_buy',
                 'items.*.campaign_id' => 'nullable|exists:group_buy_campaigns,id',
+                'items.*.shop_listing_id' => 'nullable|exists:shop_listings,id',
+                'items.*.community_shop_id' => 'nullable|exists:community_shops,id',
+                'items.*.recommendation_code' => 'nullable|string',
+                'items.*.recommender_id' => 'nullable|exists:users,id',
                 'payment_method' => 'required|in:cod,bkash,nagad',
                 'address_id' => 'nullable|integer',
                 'shipping_name' => 'required_without:address_id|nullable|string|max:100',
@@ -179,6 +198,9 @@ class OrderController extends Controller
                         }
                     }
 
+                    // Resolve attribution & commercial allocation
+                    $attrib = $this->commercialService->resolveLineAttribution($line, $product, $variant, $user);
+
                     // Determine price & handle group campaign
                     if ($mode === 'group_buy') {
                         $campaign = GroupBuyCampaign::where('id', $line['campaign_id'])->lockForUpdate()->firstOrFail();
@@ -211,10 +233,15 @@ class OrderController extends Controller
 
                         $campaignsToInspect[$campaign->id] = $campaign;
                     } else {
-                        $unitPrice = $variant ? (float) $variant->effective_price : (float) $product->base_price;
+                        if (! $product->is_normal_purchase_enabled && $attrib['earning_model'] !== 'community_shop') {
+                            throw ValidationException::withMessages([
+                                'items' => ["Direct purchase is currently disabled for '{$product->title}'."],
+                            ]);
+                        }
+                        $unitPrice = (float) $attrib['unit_price'];
                     }
 
-                    $lineTotal = $unitPrice * $quantity;
+                    $lineTotal = round($unitPrice * $quantity, 2);
                     $subtotal += $lineTotal;
 
                     if (! $product->is_free_shipping) {
@@ -234,6 +261,19 @@ class OrderController extends Controller
                         'unit_price' => $unitPrice,
                         'quantity' => $quantity,
                         'line_total' => $lineTotal,
+                        // Attribution & Commercial snapshot
+                        'earning_model' => $attrib['earning_model'],
+                        'community_shop_id' => $attrib['community_shop_id'],
+                        'shop_listing_id' => $attrib['shop_listing_id'],
+                        'recommender_id' => $attrib['recommender_id'],
+                        'recommendation_code' => $attrib['recommendation_code'],
+                        'beneficiary_user_id' => $attrib['beneficiary_user_id'],
+                        'supplier_allocation_price' => $attrib['supplier_allocation_price'],
+                        'gross_markup' => $attrib['gross_markup'],
+                        'platform_fee' => $attrib['platform_fee'],
+                        'seller_earning' => $attrib['seller_earning'],
+                        'commission_amount' => $attrib['commission_amount'],
+                        'commercial_terms_snapshot' => $attrib['terms_snapshot'],
                     ];
                 }
 
@@ -295,6 +335,9 @@ class OrderController extends Controller
                     $itemData['order_id'] = $order->id;
                     OrderItem::create($itemData);
                 }
+
+                // Record pending earnings for community sellers / recommenders
+                $this->earningsService->recordPendingEarningsForOrder($order);
 
                 // Save group buy reservations
                 foreach ($groupParticipantsToCreate as $gpData) {
