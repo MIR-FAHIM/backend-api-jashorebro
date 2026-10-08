@@ -7,6 +7,7 @@ use App\Models\GroupBuyCampaign;
 use App\Models\OrderItem;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class LeaderboardController extends Controller
@@ -14,14 +15,14 @@ class LeaderboardController extends Controller
     /**
      * Get community leaderboards: top sellers, top recommenders, and drop champions.
      */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
         // 1. Top Community Sellers (by completed orders through their shop)
         $topSellers = OrderItem::query()
             ->join('orders', 'order_items.order_id', '=', 'orders.id')
             ->where('order_items.earning_model', 'community_shop')
             ->whereNotNull('order_items.community_shop_id')
-            ->whereIn('orders.status', ['processing', 'shipped', 'delivered'])
+            ->where('orders.status', 'delivered')
             ->where('orders.payment_status', 'paid')
             ->select(
                 'order_items.beneficiary_user_id',
@@ -53,7 +54,7 @@ class LeaderboardController extends Controller
             ->join('orders', 'order_items.order_id', '=', 'orders.id')
             ->where('order_items.earning_model', 'recommendation')
             ->whereNotNull('order_items.recommender_id')
-            ->whereIn('orders.status', ['processing', 'shipped', 'delivered'])
+            ->where('orders.status', 'delivered')
             ->where('orders.payment_status', 'paid')
             ->select(
                 'order_items.recommender_id',
@@ -101,13 +102,25 @@ class LeaderboardController extends Controller
             ];
         });
 
+        $type = $request->query('type');
+        $leaders = match ($type) {
+            'curators', 'recommenders' => $recommenderResults,
+            'organizers', 'drops' => $organizerResults,
+            default => $sellerResults,
+        };
+
         return response()->json([
             'success' => true,
             'data' => [
                 'top_sellers' => $sellerResults,
                 'top_recommenders' => $recommenderResults,
                 'top_organizers' => $organizerResults,
+                'leaders' => $leaders,
             ],
+            'leaders' => $leaders,
+            'top_sellers' => $sellerResults,
+            'top_recommenders' => $recommenderResults,
+            'top_organizers' => $organizerResults,
         ]);
     }
 }

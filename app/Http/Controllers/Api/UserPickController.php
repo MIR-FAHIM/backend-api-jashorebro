@@ -36,6 +36,7 @@ class UserPickController extends Controller
         return response()->json([
             'success' => true,
             'data' => $picks,
+            'picks' => $picks,
         ]);
     }
 
@@ -46,9 +47,12 @@ class UserPickController extends Controller
     {
         $user = $request->user();
 
+        $caption = $request->input('caption') ?? $request->input('personal_caption');
+
         $validated = $request->validate([
             'product_id' => 'required|exists:products,id',
             'caption' => 'nullable|string|max:1000',
+            'personal_caption' => 'nullable|string|max:1000',
             'is_featured' => 'nullable|boolean',
             'is_public' => 'nullable|boolean',
         ]);
@@ -68,7 +72,7 @@ class UserPickController extends Controller
         $pick = UserPick::create([
             'user_id' => $user->id,
             'product_id' => $validated['product_id'],
-            'caption' => $validated['caption'] ?? null,
+            'caption' => $caption,
             'display_order' => (int) UserPick::where('user_id', $user->id)->count(),
             'is_featured' => (bool) ($validated['is_featured'] ?? false),
             'is_public' => (bool) ($validated['is_public'] ?? true),
@@ -110,6 +114,7 @@ class UserPickController extends Controller
             'success' => true,
             'message' => 'Product saved to your picks.',
             'data' => $pick->load(['product.primaryImage']),
+            'pick' => $pick,
         ], 201);
     }
 

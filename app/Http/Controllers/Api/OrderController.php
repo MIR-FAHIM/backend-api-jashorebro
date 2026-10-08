@@ -97,7 +97,7 @@ class OrderController extends Controller
 
             if (! $product->is_free_shipping) {
                 $allFreeShipping = false;
-                $maxShippingCharge = max($maxShippingCharge, (float) ($product->shipping_charge ?? 60.00));
+                $maxShippingCharge = max($maxShippingCharge, (float) ($product->shipping_charge ?? 0.00));
             }
 
             $itemsQuote[] = [
@@ -246,7 +246,7 @@ class OrderController extends Controller
 
                     if (! $product->is_free_shipping) {
                         $allFreeShipping = false;
-                        $maxShippingCharge = max($maxShippingCharge, (float) ($product->shipping_charge ?? 60.00));
+                        $maxShippingCharge = max($maxShippingCharge, (float) ($product->shipping_charge ?? 0.00));
                     }
 
                     $orderItemsData[] = [

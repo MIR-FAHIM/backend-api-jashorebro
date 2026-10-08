@@ -38,18 +38,30 @@ class CommunityCommercialService
         ?CommunityShop $shop = null,
         ?User $buyer = null
     ): array {
-        // Resolve supplier allocation & min/max bounds
         $supplierAllocation = $variant?->supplier_allocation_price
             ?? $product->supplier_allocation_price
-            ?? (float) ($product->cost_price ?? round($product->base_price * 0.85, 2));
+            ?? $product->cost_price;
 
-        $minPrice = $variant?->min_selling_price
+        if ($supplierAllocation === null) {
+            throw ValidationException::withMessages([
+                'selling_price' => ["Commercial wholesale pricing is not configured for '{$product->title}'. This product cannot be listed in a community shop."],
+            ]);
+        }
+        $supplierAllocation = (float) $supplierAllocation;
+
+        $minPrice = (float) ($variant?->min_selling_price
             ?? $product->min_selling_price
-            ?? $supplierAllocation;
+            ?? $supplierAllocation);
 
         $maxPrice = $variant?->max_selling_price
-            ?? $product->max_selling_price
-            ?? round($product->base_price * 1.5, 2);
+            ?? $product->max_selling_price;
+
+        if ($maxPrice === null) {
+            throw ValidationException::withMessages([
+                'selling_price' => ["Maximum retail price ceiling is not configured for '{$product->title}'. This product cannot be listed in a community shop."],
+            ]);
+        }
+        $maxPrice = (float) $maxPrice;
 
         $platformFeePercent = (float) ($product->platform_fee_percent ?? 10.00);
 

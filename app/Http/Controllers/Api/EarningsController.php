@@ -26,6 +26,9 @@ class EarningsController extends Controller
         return response()->json([
             'success' => true,
             'data' => $balances,
+            'balances' => $balances,
+            'balance' => $balances['available'] ?? 0,
+            ...$balances,
         ]);
     }
 
@@ -44,6 +47,7 @@ class EarningsController extends Controller
         return response()->json([
             'success' => true,
             'data' => $ledgers->getCollection(),
+            'entries' => $ledgers->getCollection(),
             'meta' => [
                 'current_page' => $ledgers->currentPage(),
                 'last_page' => $ledgers->lastPage(),
@@ -58,6 +62,16 @@ class EarningsController extends Controller
     public function requestPayout(Request $request): JsonResponse
     {
         $user = $request->user();
+
+        $input = $request->all();
+        if (isset($input['payout_method'])) {
+            if ($input['payout_method'] === 'bank') $input['payout_method'] = 'bank_transfer';
+            if ($input['payout_method'] === 'cash') $input['payout_method'] = 'cash_hub';
+        }
+        if (! isset($input['account_number']) && isset($input['account_identifier'])) {
+            $input['account_number'] = $input['account_identifier'];
+        }
+        $request->merge($input);
 
         $validated = $request->validate([
             'amount' => 'required|numeric|min:50',
@@ -84,6 +98,7 @@ class EarningsController extends Controller
             'success' => true,
             'message' => 'Withdrawal request submitted for administrative review.',
             'data' => $payout,
+            'payout' => $payout,
         ], 201);
     }
 

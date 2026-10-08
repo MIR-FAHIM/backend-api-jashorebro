@@ -38,6 +38,7 @@ class CommunityShopController extends Controller
             return response()->json([
                 'success' => true,
                 'data' => null,
+                'shop' => null,
                 'has_shop' => false,
             ]);
         }
@@ -45,13 +46,16 @@ class CommunityShopController extends Controller
         $followerCount = $user->followers()->count();
         $totalSalesCount = OrderItem::where('community_shop_id', $shop->id)->count();
 
+        $shopData = array_merge($shop->toArray(), [
+            'follower_count' => $followerCount,
+            'total_sales_count' => $totalSalesCount,
+        ]);
+
         return response()->json([
             'success' => true,
             'has_shop' => true,
-            'data' => array_merge($shop->toArray(), [
-                'follower_count' => $followerCount,
-                'total_sales_count' => $totalSalesCount,
-            ]),
+            'data' => $shopData,
+            'shop' => $shopData,
         ]);
     }
 
@@ -69,19 +73,31 @@ class CommunityShopController extends Controller
             ]);
         }
 
+        $description = $request->input('description') ?? $request->input('bio');
+
         $validated = $request->validate([
             'name' => 'required|string|max:100',
-            'slug' => 'required|string|max:100|alpha_dash|unique:community_shops,slug',
+            'slug' => 'nullable|string|max:100|alpha_dash|unique:community_shops,slug',
             'description' => 'nullable|string|max:1000',
+            'bio' => 'nullable|string|max:1000',
             'logo_url' => 'nullable|string',
             'banner_url' => 'nullable|string',
         ]);
 
+        $slug = ! empty($validated['slug'])
+            ? Str::slug($validated['slug'])
+            : Str::slug($validated['name']) . '-' . $user->id;
+
+        // Ensure unique slug
+        if (CommunityShop::where('slug', $slug)->exists()) {
+            $slug .= '-' . Str::lower(Str::random(4));
+        }
+
         $shop = CommunityShop::create([
             'user_id' => $user->id,
             'name' => $validated['name'],
-            'slug' => Str::slug($validated['slug']),
-            'description' => $validated['description'] ?? null,
+            'slug' => $slug,
+            'description' => $description,
             'logo_url' => $validated['logo_url'] ?? null,
             'banner_url' => $validated['banner_url'] ?? null,
             'status' => 'active',
@@ -103,6 +119,7 @@ class CommunityShopController extends Controller
             'success' => true,
             'message' => 'Community shop created successfully!',
             'data' => $shop,
+            'shop' => $shop,
         ], 201);
     }
 
@@ -114,13 +131,21 @@ class CommunityShopController extends Controller
         $user = $request->user();
         $shop = CommunityShop::where('user_id', $user->id)->firstOrFail();
 
+        $description = $request->input('description') ?? $request->input('bio');
+
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:100',
             'description' => 'nullable|string|max:1000',
+            'bio' => 'nullable|string|max:1000',
             'logo_url' => 'nullable|string',
             'banner_url' => 'nullable|string',
             'notice' => 'nullable|string|max:500',
         ]);
+
+        if ($description !== null) {
+            $validated['description'] = $description;
+        }
+        unset($validated['bio']);
 
         $shop->update($validated);
 
@@ -128,6 +153,7 @@ class CommunityShopController extends Controller
             'success' => true,
             'message' => 'Shop details updated.',
             'data' => $shop,
+            'shop' => $shop,
         ]);
     }
 
@@ -408,6 +434,7 @@ class CommunityShopController extends Controller
         return response()->json([
             'success' => true,
             'data' => $sanitized,
+            'sales' => $sanitized,
             'meta' => [
                 'current_page' => $items->currentPage(),
                 'last_page' => $items->lastPage(),

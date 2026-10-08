@@ -3,13 +3,24 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\CommunityShop;
 use App\Models\Friendship;
+use App\Models\GroupBuyCampaign;
+use App\Models\GroupBuyParticipant;
+use App\Models\Order;
 use App\Models\User;
+use App\Models\UserPick;
+use App\Services\EarningsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class FriendController extends Controller
 {
+    public function __construct(
+        protected ?EarningsService $earningsService = null
+    ) {
+        $this->earningsService = $earningsService ?? app(EarningsService::class);
+    }
     /**
      * List confirmed friends of the authenticated user.
      */
@@ -447,6 +458,37 @@ class FriendController extends Controller
             $friendshipId = $friendship?->id;
         }
 
+        $picksCount = UserPick::where('user_id', $user->id)->where('is_public', true)->count();
+        $dropsJoinedCount = GroupBuyParticipant::where('user_id', $user->id)
+            ->whereIn('status', ['reserved', 'confirmed'])
+            ->distinct('campaign_id')
+            ->count('campaign_id');
+        $dropsOrganizedCount = GroupBuyCampaign::where('organizer_user_id', $user->id)->count();
+        $followersCount = $user->followers()->count();
+        $followingCount = $user->following()->count();
+
+        // Active shop if exists
+        $shop = CommunityShop::where('user_id', $user->id)
+            ->whereIn('status', ['active', 'verified'])
+            ->first();
+
+        // User's public picks
+        $publicPicks = UserPick::with(['product.primaryImage', 'product.activeVariants'])
+            ->where('user_id', $user->id)
+            ->where('is_public', true)
+            ->orderBy('is_featured', 'desc')
+            ->orderBy('display_order', 'asc')
+            ->limit(12)
+            ->get();
+
+        // Drops organized by this user
+        $organizedDrops = GroupBuyCampaign::with(['product.primaryImage', 'variant'])
+            ->where('organizer_user_id', $user->id)
+            ->where('status', 'active')
+            ->orderBy('id', 'desc')
+            ->limit(6)
+            ->get();
+
         return response()->json([
             'success' => true,
             'data' => [
@@ -464,11 +506,78 @@ class FriendController extends Controller
                 'stats' => [
                     'friends_count' => $friendsCount,
                     'mutual_friends_count' => $mutualFriendsCount,
-                    'picks_count' => 0, // Hooked up when shelf feature is deployed
-                    'drops_joined_count' => 0,
+                    'followers_count' => $followersCount,
+                    'following_count' => $followingCount,
+                    'picks_count' => $picksCount,
+                    'drops_joined_count' => $dropsJoinedCount,
+                    'drops_organized_count' => $dropsOrganizedCount,
                 ],
                 'relationship_status' => $relationshipStatus,
                 'friendship_id' => $friendshipId,
+                'shop' => $shop ? [
+                    'id' => $shop->id,
+                    'name' => $shop->name,
+                    'slug' => $shop->slug,
+                    'description' => $shop->description,
+                    'logo_url' => $shop->logo_url,
+                    'is_verified' => (bool) $shop->is_verified,
+                ] : null,
+                'picks' => $publicPicks,
+                'drops' => $organizedDrops,
+            ],
+        ]);
+    }
+
+    /**
+     * Get authenticated user's profile summary with real database stats and balances.
+     */
+    public function summary(Request $request): JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user()->load('profile');
+
+        $friendIds = $user->friendIds();
+        $friendsCount = count($friendIds);
+        $followersCount = $user->followers()->count();
+        $followingCount = $user->following()->count();
+        $picksCount = UserPick::where('user_id', $user->id)->count();
+        $dropsJoinedCount = GroupBuyParticipant::where('user_id', $user->id)
+            ->whereIn('status', ['reserved', 'confirmed'])
+            ->distinct('campaign_id')
+            ->count('campaign_id');
+        $dropsOrganizedCount = GroupBuyCampaign::where('organizer_user_id', $user->id)->count();
+        $ordersCount = Order::where('user_id', $user->id)->count();
+
+        $shop = CommunityShop::where('user_id', $user->id)->first();
+        $balances = $this->earningsService->getUserBalances($user);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'user' => [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'username' => $user->username,
+                    'phone' => $user->phone,
+                    'phone_verified' => $user->isPhoneVerified(),
+                    'avatar_url' => $user->profile?->avatar_url,
+                    'bio' => $user->profile?->bio,
+                    'locality' => $user->profile?->locality ?? 'Jashore',
+                    'district' => $user->profile?->district ?? 'Jashore',
+                    'joined_at' => $user->created_at?->format('F Y'),
+                ],
+                'stats' => [
+                    'friends_count' => $friendsCount,
+                    'followers_count' => $followersCount,
+                    'following_count' => $followingCount,
+                    'picks_count' => $picksCount,
+                    'drops_joined_count' => $dropsJoinedCount,
+                    'drops_organized_count' => $dropsOrganizedCount,
+                    'orders_count' => $ordersCount,
+                ],
+                'balances' => $balances,
+                'shop' => $shop,
+                'has_shop' => (bool) $shop,
             ],
         ]);
     }

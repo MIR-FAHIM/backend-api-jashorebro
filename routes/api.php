@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\AddressController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CommunityDropController;
+use App\Http\Controllers\Api\CommunityFeedController;
 use App\Http\Controllers\Api\CommunityShopController;
 use App\Http\Controllers\Api\EarningsController;
 use App\Http\Controllers\Api\FriendController;
@@ -139,6 +140,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/community-drops/eligible-products', [CommunityDropController::class, 'eligibleProducts']);
     Route::get('/community-drops/my', [CommunityDropController::class, 'myDrops']);
     Route::post('/community-drops', [CommunityDropController::class, 'store']);
+    Route::get('/drops/user/joined', [CommunityDropController::class, 'joinedDrops']);
+    Route::post('/drops/{id}/join', [CommunityDropController::class, 'toggleInterest']);
+
+    // Community Feed (Authenticated Following)
+    Route::get('/feed/following', [CommunityFeedController::class, 'following']);
+
+    // Authenticated Profile Summary
+    Route::get('/profile/summary', [FriendController::class, 'summary']);
 
     // Earnings & Payout Ledger
     Route::get('/earnings/summary', [EarningsController::class, 'summary']);
@@ -157,6 +166,9 @@ Route::middleware('auth:sanctum')->group(function () {
 | Public Community Discovery & Leaderboards Routes
 |--------------------------------------------------------------------------
 */
+Route::get('/feed', [CommunityFeedController::class, 'index']);
+Route::get('/drops', [CommunityDropController::class, 'publicIndex']);
+Route::get('/drops/{id}', [CommunityDropController::class, 'show']);
 Route::get('/picks/user/{username}', [UserPickController::class, 'userPicks']);
 Route::get('/picks/code/{code}', [UserPickController::class, 'lookupCode']);
 Route::get('/shops/slug/{slug}', [CommunityShopController::class, 'showPublic']);
