@@ -6,7 +6,7 @@ use App\Models\Seller;
 use App\Models\User;
 
 test('can list categories with active status and counts', function () {
-    $parent = Category::factory()->create([
+    $parent = Category::create([
         'name' => 'Artisan Sweets',
         'slug' => 'artisan-sweets',
         'is_active' => true,
@@ -43,6 +43,7 @@ test('can search and filter products by category and search keyword', function (
         'slug' => 'pure-patali-gur-test',
         'base_price' => 650,
         'stock_quantity' => 50,
+        'status' => 'published',
         'is_active' => true,
         'is_featured' => true,
         'is_drop_ready' => true,
