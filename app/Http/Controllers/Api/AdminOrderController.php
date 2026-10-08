@@ -48,6 +48,12 @@ class AdminOrderController extends Controller
             }
         }
 
+        if ($channel = $request->input('channel')) {
+            if ($channel !== 'all' && \Illuminate\Support\Facades\Schema::hasColumn('orders', 'channel')) {
+                $query->where('channel', $channel);
+            }
+        }
+
         $orders = $query->latest('id')->paginate(20);
 
         return response()->json([

@@ -104,8 +104,14 @@ class LogService
         if (str_starts_with($event, 'order.')) {
             return 'order';
         }
+        if (str_starts_with($event, 'pos.')) {
+            return 'order';
+        }
         if (str_starts_with($event, 'product.')) {
             return 'product';
+        }
+        if (str_starts_with($event, 'address.')) {
+            return 'address';
         }
 
         return explode('.', $event)[0] ?? 'general';
@@ -157,6 +163,10 @@ class LogService
 
         if (! empty($metadata['product_id'])) {
             return [Product::class, (int) $metadata['product_id']];
+        }
+
+        if (! empty($metadata['address_id'])) {
+            return [\App\Models\UserAddress::class, (int) $metadata['address_id']];
         }
 
         return [null, null];
@@ -218,6 +228,14 @@ class LogService
             $sanitized['status'] = $subject->status;
         }
 
+        // Contextual snapshots for Addresses (safe metadata only: no street address or sensitive details)
+        if ($subject instanceof \App\Models\UserAddress) {
+            $sanitized['address_id'] = $subject->id;
+            $sanitized['label'] = $subject->label;
+            $sanitized['district'] = $subject->locality_district;
+            $sanitized['is_default'] = $subject->is_default;
+        }
+
         return $sanitized;
     }
 
@@ -243,6 +261,16 @@ class LogService
             'product.published' => "Product '{$metadata['title']}' published to catalog.",
             'product.archived' => "Product '{$metadata['title']}' archived.",
             'product.creation_failed' => 'Product creation failed: ' . ($metadata['failure_reason'] ?? 'Validation error.'),
+
+            'address.created' => "Delivery address '{$metadata['label']}' added.",
+            'address.created_by_admin' => "Delivery address '{$metadata['label']}' added by admin for customer #{$metadata['customer_id']}.",
+            'address.updated' => "Delivery address '{$metadata['label']}' updated.",
+            'address.deleted' => "Delivery address '{$metadata['label']}' removed.",
+            'address.default_changed' => "Default delivery address updated to '{$metadata['label']}'.",
+
+            'pos.order_created' => "POS Order #" . ($metadata['order_number'] ?? 'N/A') . " created by admin.",
+            'pos.payment_confirmed' => "POS payment of BDT " . ($metadata['amount'] ?? '0') . " confirmed via " . ($metadata['payment_method'] ?? 'cash') . ".",
+            'pos.discount_applied' => "Manual discount of BDT " . ($metadata['discount_amount'] ?? '0') . " applied to Order #" . ($metadata['order_number'] ?? 'N/A') . ".",
 
             default => "Business event '{$event}' recorded with outcome '{$outcome}'.",
         };

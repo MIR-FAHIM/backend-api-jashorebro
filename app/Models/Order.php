@@ -14,15 +14,22 @@ class Order extends Model
 
     protected $fillable = [
         'order_number',
+        'idempotency_key',
         'user_id',
+        'created_by_admin_id',
         'seller_id',
+        'channel', // web, pos
         'status', // awaiting_group, pending, processing, shipped, delivered, cancelled
         'payment_status', // unpaid, paid, refunded
-        'payment_method', // cod, bkash, nagad
+        'payment_method', // cash, cod, bkash, nagad
         'subtotal',
         'shipping_fee',
         'discount_amount',
+        'discount_reason',
+        'tax_amount',
         'total_amount',
+        'amount_received',
+        'change_amount',
         'shipping_name',
         'shipping_phone',
         'shipping_district',
@@ -39,7 +46,10 @@ class Order extends Model
             'subtotal' => 'float',
             'shipping_fee' => 'float',
             'discount_amount' => 'float',
+            'tax_amount' => 'float',
             'total_amount' => 'float',
+            'amount_received' => 'float',
+            'change_amount' => 'float',
             'cancelled_at' => 'datetime',
         ];
     }
@@ -47,6 +57,11 @@ class Order extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function createdByAdmin(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by_admin_id');
     }
 
     public function seller(): BelongsTo

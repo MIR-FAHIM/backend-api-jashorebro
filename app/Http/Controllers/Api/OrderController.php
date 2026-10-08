@@ -132,11 +132,12 @@ class OrderController extends Controller
                 'items.*.purchase_mode' => 'required|in:normal,group_buy',
                 'items.*.campaign_id' => 'nullable|exists:group_buy_campaigns,id',
                 'payment_method' => 'required|in:cod,bkash,nagad',
-                'shipping_name' => 'required|string|max:100',
-                'shipping_phone' => 'required|string|max:30',
-                'shipping_district' => 'required|string|max:50',
-                'shipping_upazila' => 'required|string|max:50',
-                'shipping_address' => 'required|string',
+                'address_id' => 'nullable|integer',
+                'shipping_name' => 'required_without:address_id|nullable|string|max:100',
+                'shipping_phone' => 'required_without:address_id|nullable|string|max:30',
+                'shipping_district' => 'required_without:address_id|nullable|string|max:50',
+                'shipping_upazila' => 'required_without:address_id|nullable|string|max:50',
+                'shipping_address' => 'required_without:address_id|nullable|string',
                 'notes' => 'nullable|string|max:500',
             ]);
 
@@ -254,6 +255,22 @@ class OrderController extends Controller
                 // Generate order number
                 $orderNumber = 'JB-ORD-' . date('Ymd') . '-' . strtoupper(Str::random(5));
 
+                // Resolve immutable shipping snapshot
+                if (! empty($validated['address_id'])) {
+                    $savedAddress = \App\Models\UserAddress::where('user_id', $user->id)->findOrFail($validated['address_id']);
+                    $shippingName = $validated['shipping_name'] ?? $savedAddress->recipient_name;
+                    $shippingPhone = $validated['shipping_phone'] ?? $savedAddress->recipient_phone;
+                    $shippingDistrict = $validated['shipping_district'] ?? $savedAddress->locality_district;
+                    $shippingUpazila = $validated['shipping_upazila'] ?? $savedAddress->sub_district_thana;
+                    $shippingAddress = $validated['shipping_address'] ?? $savedAddress->street_address;
+                } else {
+                    $shippingName = $validated['shipping_name'];
+                    $shippingPhone = $validated['shipping_phone'];
+                    $shippingDistrict = $validated['shipping_district'];
+                    $shippingUpazila = $validated['shipping_upazila'];
+                    $shippingAddress = $validated['shipping_address'];
+                }
+
                 $order = Order::create([
                     'order_number' => $orderNumber,
                     'user_id' => $user->id,
@@ -265,11 +282,11 @@ class OrderController extends Controller
                     'shipping_fee' => round($shippingFee, 2),
                     'discount_amount' => 0.00,
                     'total_amount' => round($totalAmount, 2),
-                    'shipping_name' => $validated['shipping_name'],
-                    'shipping_phone' => $validated['shipping_phone'],
-                    'shipping_district' => $validated['shipping_district'],
-                    'shipping_upazila' => $validated['shipping_upazila'],
-                    'shipping_address' => $validated['shipping_address'],
+                    'shipping_name' => $shippingName,
+                    'shipping_phone' => $shippingPhone,
+                    'shipping_district' => $shippingDistrict,
+                    'shipping_upazila' => $shippingUpazila,
+                    'shipping_address' => $shippingAddress,
                     'notes' => $validated['notes'] ?? null,
                 ]);
 

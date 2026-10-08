@@ -580,3 +580,160 @@ Idempotently mark a single notification as read.
 Mark all unread notifications in the specified context as read.
 - **Headers:** `Authorization: Bearer <token>`
 - **Body:** `{ "context": "customer" }` (or `"admin"`)
+
+---
+
+## 10. Customer Delivery Address Management APIs
+
+### 10.1 Architecture & Design
+- **Authenticated Tenancy:** All address operations (`GET`, `POST`, `PUT`, `DELETE`, `PATCH`) are protected by `auth:sanctum`. Ownership is derived exclusively from `$request->user()->id`; client-submitted `user_id` payloads are strictly ignored.
+- **Single Default Invariance:** Exactly zero or one default address is maintained per customer. When a customer adds their first address, it automatically becomes the default (`is_default = true`). Setting or creating an address with `is_default = true` updates all other customer addresses to `false` in an atomic database transaction.
+- **Automatic Default Fallback:** If the customer deletes their default address, the system automatically designates another existing address as the default if one remains.
+- **Immutable Order Fulfillment Snapshot:** During checkout (`POST /api/orders`), customers can provide `address_id`. The backend verifies customer ownership and snapshots recipient details, street address, upazila, and district into the `orders` table. Any subsequent edits or deletions to the customer's address book have zero effect on historical orders.
+- **Audit Logging:** Every address mutation triggers `LogService::record` with safe metadata:
+  - `address.created`: Logs address ID, label, and district.
+  - `address.updated`: Logs address ID, label, and district.
+  - `address.deleted`: Logs address ID, label, and was_default flag.
+  - `address.default_changed`: Logs new default address ID and label.
+  - Raw street addresses, payment details, and full personal telephone numbers are never logged in metadata.
+
+### 10.2 Endpoints
+
+#### `GET /api/addresses`
+List all saved delivery addresses for the authenticated customer.
+- **Headers:** `Authorization: Bearer <token>`
+- **Response `200 OK`:**
+  ```json
+  {
+    "success": true,
+    "data": [
+      {
+        "id": 1,
+        "user_id": 4,
+        "label": "Home",
+        "recipient_name": "Fahim Ahmed",
+        "recipient_phone": "01712345678",
+        "country": "Bangladesh",
+        "district": "Jashore",
+        "locality_district": "Jashore",
+        "upazila": "Jashore Sadar",
+        "sub_district_thana": "Jashore Sadar",
+        "street_address": "House 12, Road 4, Mujib Sarak",
+        "landmark": "Near Municipal Park",
+        "postal_code": "7400",
+        "delivery_instructions": "Call before arrival",
+        "is_default": true,
+        "created_at": "2026-10-08T07:30:00.000000Z",
+        "updated_at": "2026-10-08T07:30:00.000000Z"
+      }
+    ]
+  }
+  ```
+
+#### `POST /api/addresses`
+Create a new delivery address for the authenticated customer.
+- **Headers:** `Authorization: Bearer <token>`
+- **Body:**
+  ```json
+  {
+    "recipient_name": "Fahim Ahmed",
+    "recipient_phone": "01712345678",
+    "country": "Bangladesh",
+    "district": "Jashore",
+    "upazila": "Jashore Sadar",
+    "street_address": "House 12, Road 4, Mujib Sarak",
+    "landmark": "Near Municipal Park",
+    "postal_code": "7400",
+    "delivery_instructions": "Gate code #1234",
+    "label": "Home",
+    "is_default": true
+  }
+  ```
+- **Response `201 Created`:** Address object with assigned `id` and `is_default`.
+
+#### `GET /api/addresses/{id}`
+Retrieve a specific address belonging to the authenticated customer.
+- **Headers:** `Authorization: Bearer <token>`
+- **Response:** `200 OK` or `404 Not Found` if address belongs to another user.
+
+#### `PUT /api/addresses/{id}`
+Update an existing address belonging to the authenticated customer.
+- **Headers:** `Authorization: Bearer <token>`
+- **Response `200 OK`:** Updated address record.
+
+#### `DELETE /api/addresses/{id}`
+Delete a delivery address belonging to the authenticated customer.
+- **Headers:** `Authorization: Bearer <token>`
+- **Response `200 OK`:** `{ "success": true, "message": "Delivery address removed successfully." }`
+
+#### `PATCH /api/addresses/{id}/default`
+Atomically mark the given address as the customer's primary default address.
+- **Headers:** `Authorization: Bearer <token>`
+- **Response `200 OK`:** `{ "success": true, "message": "Default delivery address updated.", "data": { ... } }`
+
+### 10.3 Frontend UX & Session Behavior
+- **Auto-Prompt on Zero Addresses:** Upon logging in, if the customer has 0 saved addresses, an "Add your delivery address" dialog appears automatically.
+- **Resilient Error Handling:** Network errors or loading states do not trigger empty address behavior.
+- **Session Dismissal ("Later"):** If the customer selects "Later", `jb_address_setup_dismissed_{user_id}` is stored in `sessionStorage` to prevent re-opening while browsing during the same session.
+- **Strict Checkout Validation:** Checkout checks that a valid delivery address is selected or entered before permitting order submission.
+- **Customer Profile Hub:** Dedicated "Saved Addresses" tab at `/profile` allows customers to add, edit, delete, and set default addresses anytime.
+
+---
+
+## 11. Admin Point of Sale (POS) System
+
+### 11.1 Overview & Architecture
+The Admin Point of Sale (POS) terminal enables authorized store administrators (`admin`, `super_admin`) to process walk-in customer purchases directly from physical retail counters or hub stores in Jashore.
+
+Key architectural requirements:
+- **Authorized Execution:** Endpoints protected by `auth:sanctum` and `role:admin,super_admin`.
+- **Customer Assignment:** Every sale is bound to a registered customer. Admins can search existing customers or register new delivery addresses on their behalf.
+- **Strict Address Tenancy:** Delivery addresses submitted during POS checkout must belong strictly to the selected customer.
+- **Server-Side Pricing & Quotes:** The backend computes subtotal, discounts, shipping, tax, and grand totals with decimal precision. Client-submitted prices are never trusted.
+- **Discount Controls:** Manual discounts require a mandatory explanation/reason (`discount_reason`) and cannot exceed the cart subtotal.
+- **Payment Tendering & Cash Change:** Supports Cash, bKash, Nagad, and COD. For Cash transactions, `amount_received` must be $\ge$ `total_amount`, and change (`change_amount = amount_received - total_amount`) is calculated server-side and recorded.
+- **Inventory Concurrency:** Uses `lockForUpdate()` during checkout to atomically deduct product and variant inventory and prevent race conditions.
+- **Idempotency Guarantee:** Client submits a unique `idempotency_key` (UUID). Repeated submissions return the previously created order without deducting inventory twice.
+- **Audit Logging & Notifications:** Emits structured events to `LogService` (`pos.order_created`, `pos.payment_confirmed`, `pos.discount_applied`, `address.created_by_admin`) and sends an in-app notification to the customer via `NotificationService`.
+
+### 11.2 API Endpoints
+
+#### `GET /api/admin/pos/products`
+Search active marketplace catalog items by keyword, SKU, or barcode for adding to the POS cart.
+- **Query Parameters:** `q` (string, min 1 char)
+- **Response `200 OK`:** Returns matching active, published, normal-purchase eligible products with `activeVariants` and `primaryImage`.
+
+#### `GET /api/admin/pos/customers`
+Search registered customer accounts by name, phone, email, or username.
+- **Query Parameters:** `q` (string, min 2 chars)
+- **Response `200 OK`:** Returns matching customer user profiles.
+
+#### `GET /api/admin/customers/{id}/addresses`
+Retrieve all delivery addresses belonging to a specific customer.
+- **Response `200 OK`:** List of customer's saved addresses.
+
+#### `POST /api/admin/customers/{id}/addresses`
+Create a new delivery address on behalf of the customer. Automatically maintains single-default invariance if `is_default: true`.
+- **Request Body:** Delivery address payload (`recipient_name`, `phone`, `district`, `upazila`, `address`, `label`, `is_default`).
+- **Response `201 Created`:** Created address object.
+
+#### `POST /api/admin/pos/quote`
+Compute authoritative subtotal, discounts, shipping, tax, and grand totals for the POS cart without saving an order.
+- **Request Body:** `{ items: [...], discount_amount, discount_reason, shipping_fee }`
+- **Response `200 OK`:** Authoritative pricing summary with line totals.
+
+#### `POST /api/admin/pos/orders`
+Complete and record a Point of Sale checkout atomically.
+- **Request Body:** `{ customer_id, address_id, items: [...], discount_amount, discount_reason, shipping_fee, payment_method, amount_received, note, idempotency_key }`
+- **Response `201 Created`:** Created order object with order number, receipt details, tender breakdown, and change amount.
+
+#### `GET /api/admin/pos/orders/{id}`
+Retrieve order details formatted for printing thermal POS receipts and review.
+- **Response `200 OK`:** Full POS order record with customer, items, and tender breakdown.
+
+### 11.3 Orders Channel Filtering
+In `GET /api/admin/orders`:
+- **Query Parameter:** `channel` (`all`, `pos`, `web`)
+- Orders table renders a dedicated `POS` badge for in-store transactions.
+- Order details modal displays tender breakdown (amount received, change returned) and discount reason.
+

@@ -5,7 +5,9 @@ use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminGroupBuyController;
 use App\Http\Controllers\Api\AdminLogController;
 use App\Http\Controllers\Api\AdminOrderController;
+use App\Http\Controllers\Api\AdminPosController;
 use App\Http\Controllers\Api\AdminProductController;
+use App\Http\Controllers\Api\AddressController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\FriendController;
@@ -95,6 +97,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/orders/{id}/history', [OrderController::class, 'history']);
     Route::post('/orders/{id}/cancel', [OrderController::class, 'cancel']);
 
+    // Customer Delivery Addresses
+    Route::get('/addresses', [AddressController::class, 'index']);
+    Route::post('/addresses', [AddressController::class, 'store']);
+    Route::get('/addresses/{id}', [AddressController::class, 'show']);
+    Route::put('/addresses/{id}', [AddressController::class, 'update']);
+    Route::delete('/addresses/{id}', [AddressController::class, 'destroy']);
+    Route::patch('/addresses/{id}/default', [AddressController::class, 'setDefault']);
+
     // In-App Notifications (Customer & Admin context)
     Route::get('/notifications', [NotificationController::class, 'index']);
     Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
@@ -154,4 +164,13 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('/logs', [AdminLogController::class, 'index']);
     Route::get('/logs/summary', [AdminLogController::class, 'summary']);
     Route::get('/logs/{id}', [AdminLogController::class, 'show']);
+
+    // Admin Point of Sale (POS) & Customer Address Management
+    Route::get('/pos/products', [AdminPosController::class, 'products']);
+    Route::get('/pos/customers', [AdminPosController::class, 'customers']);
+    Route::get('/customers/{customerId}/addresses', [AdminPosController::class, 'customerAddresses']);
+    Route::post('/customers/{customerId}/addresses', [AdminPosController::class, 'storeCustomerAddress']);
+    Route::post('/pos/quote', [AdminPosController::class, 'quote']);
+    Route::post('/pos/orders', [AdminPosController::class, 'store']);
+    Route::get('/pos/orders/{id}', [AdminPosController::class, 'show']);
 });
