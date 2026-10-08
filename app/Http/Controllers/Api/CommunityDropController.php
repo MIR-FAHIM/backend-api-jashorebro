@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\CommunityShop;
 use App\Models\GroupBuyCampaign;
+use App\Models\GroupBuyParticipant;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\User;
 use App\Services\LogService;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
@@ -364,7 +366,7 @@ class CommunityDropController extends Controller
         // Notify organizer's followers
         $followers = $user->followers()->pluck('follower_id');
         foreach ($followers as $followerId) {
-            $follower = \App\Models\User::find($followerId);
+            $follower = User::find($followerId);
             if ($follower) {
                 $this->notificationService->sendToUser(
                     user: $follower,
