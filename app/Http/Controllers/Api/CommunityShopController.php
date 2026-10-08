@@ -30,6 +30,13 @@ class CommunityShopController extends Controller
     public function myShop(Request $request): JsonResponse
     {
         $user = $request->user();
+        if (! $user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
+
         $shop = CommunityShop::withCount(['listings', 'activeListings'])
             ->where('user_id', $user->id)
             ->first();
@@ -39,6 +46,7 @@ class CommunityShopController extends Controller
                 'success' => true,
                 'data' => null,
                 'shop' => null,
+                'listings' => [],
                 'has_shop' => false,
             ]);
         }
@@ -46,9 +54,16 @@ class CommunityShopController extends Controller
         $followerCount = $user->followers()->count();
         $totalSalesCount = OrderItem::where('community_shop_id', $shop->id)->count();
 
+        $listings = ShopListing::with(['product.primaryImage', 'product.activeVariants'])
+            ->where('community_shop_id', $shop->id)
+            ->orderBy('display_order', 'asc')
+            ->orderBy('id', 'desc')
+            ->get();
+
         $shopData = array_merge($shop->toArray(), [
             'follower_count' => $followerCount,
             'total_sales_count' => $totalSalesCount,
+            'bio' => $shop->description,
         ]);
 
         return response()->json([
@@ -56,24 +71,64 @@ class CommunityShopController extends Controller
             'has_shop' => true,
             'data' => $shopData,
             'shop' => $shopData,
+            'listings' => $listings,
         ]);
     }
 
     /**
      * Onboard/create a personal community shop.
+     * Idempotent: If user already has a shop, updates details and returns it cleanly.
      */
     public function store(Request $request): JsonResponse
     {
         $user = $request->user();
-
-        $existing = CommunityShop::where('user_id', $user->id)->first();
-        if ($existing) {
-            throw ValidationException::withMessages([
-                'name' => ['You already operate a community shop.'],
-            ]);
+        if (! $user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthenticated.',
+            ], 401);
         }
 
         $description = $request->input('description') ?? $request->input('bio');
+
+        $existing = CommunityShop::where('user_id', $user->id)->first();
+        if ($existing) {
+            $updateData = [];
+            if ($request->filled('name')) {
+                $updateData['name'] = $request->input('name');
+            }
+            if ($description !== null) {
+                $updateData['description'] = $description;
+            }
+            if ($request->filled('logo_url')) {
+                $updateData['logo_url'] = $request->input('logo_url');
+            }
+            if ($request->filled('banner_url')) {
+                $updateData['banner_url'] = $request->input('banner_url');
+            }
+
+            if (! empty($updateData)) {
+                $existing->update($updateData);
+                $existing->refresh();
+            }
+
+            $followerCount = $user->followers()->count();
+            $totalSalesCount = OrderItem::where('community_shop_id', $existing->id)->count();
+
+            $existingData = array_merge($existing->toArray(), [
+                'follower_count' => $followerCount,
+                'total_sales_count' => $totalSalesCount,
+                'bio' => $existing->description,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Community shop loaded successfully.',
+                'data' => $existingData,
+                'shop' => $existingData,
+                'has_shop' => true,
+            ], 200);
+        }
 
         $validated = $request->validate([
             'name' => 'required|string|max:100',
@@ -115,11 +170,18 @@ class CommunityShopController extends Controller
             ]
         );
 
+        $shopData = array_merge($shop->toArray(), [
+            'follower_count' => 0,
+            'total_sales_count' => 0,
+            'bio' => $shop->description,
+        ]);
+
         return response()->json([
             'success' => true,
             'message' => 'Community shop created successfully!',
-            'data' => $shop,
-            'shop' => $shop,
+            'data' => $shopData,
+            'shop' => $shopData,
+            'has_shop' => true,
         ], 201);
     }
 
