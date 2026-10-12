@@ -126,6 +126,16 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     }
 
     /**
+     * Products curated/picked by this user.
+     */
+    public function pickedProducts(): BelongsToMany
+    {
+        return $this->belongsToMany(Product::class, 'user_picks')
+            ->withPivot(['caption', 'display_order', 'is_featured', 'is_public', 'recommendation_code'])
+            ->withTimestamps();
+    }
+
+    /**
      * Personal community storefront.
      */
     public function communityShop(): HasOne

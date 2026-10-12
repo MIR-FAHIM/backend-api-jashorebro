@@ -93,6 +93,7 @@ Route::prefix('profile')->middleware('auth:sanctum')->group(function () {
 
 Route::prefix('users')->group(function () {
     Route::get('/get-user-profile/{username}', [FriendController::class, 'userProfile'])->name('users.profile');
+    Route::get('/{userId}/picked-products', [UserPickController::class, 'userPicks'])->name('users.picked-products');
     // Compatibility alias
     Route::get('/{username}', [FriendController::class, 'userProfile']);
 });
@@ -178,10 +179,25 @@ Route::prefix('products')->group(function () {
     Route::get('/get-product/{slug}', [ProductController::class, 'show'])->name('products.show');
     Route::get('/get-active-campaign/{slug}', [ProductController::class, 'activeCampaign'])->name('products.active-campaign');
 
+    // Friends who picked this product
+    Route::get('/get-product/{productId}/friends-picked', [UserPickController::class, 'friendsWhoPicked'])->name('products.get-friends-picked');
+    Route::get('/{productId}/picked-by-friends', [UserPickController::class, 'friendsWhoPicked'])->name('products.picked-by-friends');
+
+    // Authenticated product pick / unpick shortcuts
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::post('/{productId}/pick', [UserPickController::class, 'pickProduct'])->name('products.pick');
+        Route::delete('/{productId}/pick', [UserPickController::class, 'unpickProduct'])->name('products.unpick');
+    });
+
     // Compatibility aliases
     Route::get('/', [ProductController::class, 'index']);
     Route::get('/featured', [ProductController::class, 'featured']);
     Route::get('/{slug}', [ProductController::class, 'show']);
+});
+
+// Authenticated me picked products shortcut
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/me/picked-products', [UserPickController::class, 'index'])->name('me.picked-products');
 });
 
 /*

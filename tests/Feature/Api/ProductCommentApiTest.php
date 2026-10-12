@@ -423,7 +423,7 @@ test('user mention in comment content creates in-app notification', function () 
         ->first();
 
     expect($notification)->not->toBeNull();
-    expect($notification->message)->toContain('testuser1 mentioned you');
+    expect($notification->message)->toContain("{$this->user->name} mentioned you");
 });
 
 test('comments can be filtered by type and sorted by most helpful and most reacted', function () {

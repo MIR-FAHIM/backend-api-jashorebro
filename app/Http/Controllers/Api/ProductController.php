@@ -7,6 +7,7 @@ use App\Models\Category;
 use App\Models\GroupBuyCampaign;
 use App\Models\Product;
 use App\Models\Seller;
+use App\Models\UserPick;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -92,8 +93,59 @@ class ProductController extends Controller
         $perPage = min((int) $request->input('per_page', 20), 50);
         $products = $query->paginate($perPage);
 
-        $data = $products->getCollection()->map(function (Product $product) {
-            return $this->formatProduct($product);
+        /** @var \App\Models\User|null $currentUser */
+        $currentUser = $request->user('sanctum') ?? auth('sanctum')->user();
+        $friendIds = $currentUser ? $currentUser->friendIds() : [];
+
+        $productIds = $products->getCollection()->pluck('id')->all();
+
+        $friendPicksByProduct = collect();
+        $myPicks = [];
+
+        if ($currentUser && ! empty($productIds)) {
+            $myPicks = UserPick::where('user_id', $currentUser->id)
+                ->whereIn('product_id', $productIds)
+                ->pluck('id', 'product_id')
+                ->all();
+
+            if (! empty($friendIds)) {
+                $friendPicksByProduct = UserPick::with(['user.profile', 'user:id,name,username'])
+                    ->whereIn('product_id', $productIds)
+                    ->whereIn('user_id', $friendIds)
+                    ->where('is_public', true)
+                    ->latest('id')
+                    ->get()
+                    ->groupBy('product_id');
+            }
+        }
+
+        $data = $products->getCollection()->map(function (Product $product) use ($friendPicksByProduct, $myPicks, $currentUser) {
+            $base = $this->formatProduct($product);
+
+            $picksForProduct = $friendPicksByProduct->get($product->id, collect());
+            $friendCount = $picksForProduct->count();
+            $topFriends = $picksForProduct->take(3)->map(function ($p) {
+                return [
+                    'id' => $p->user->id,
+                    'name' => $p->user->name,
+                    'username' => $p->user->username,
+                    'avatar_url' => $p->user->profile?->avatar_url ?? $p->user->profile?->avatar_path,
+                    'profile_url' => "/users/{$p->user->username}",
+                    'recommendation_code' => $p->recommendation_code,
+                ];
+            })->values()->all();
+
+            $base['picked_by_friends'] = [
+                'count' => $friendCount,
+                'users' => $topFriends,
+            ];
+
+            $base['current_user'] = [
+                'has_picked' => isset($myPicks[$product->id]),
+                'pick_id' => $myPicks[$product->id] ?? null,
+            ];
+
+            return $base;
         });
 
         return response()->json([
@@ -111,7 +163,7 @@ class ProductController extends Controller
     /**
      * Get single product details by slug.
      */
-    public function show(string $slug): JsonResponse
+    public function show(Request $request, string $slug): JsonResponse
     {
         $product = Product::where(function ($q) use ($slug) {
                 $q->where('slug', $slug);
@@ -155,6 +207,67 @@ class ProductController extends Controller
                 'end_at' => $ac->end_at?->toIso8601String(),
                 'product_variant_id' => $ac->product_variant_id,
             ];
+        }
+
+        /** @var \App\Models\User|null $currentUser */
+        $currentUser = $request->user('sanctum') ?? auth('sanctum')->user();
+
+        $pickedByFriendsData = [
+            'count' => 0,
+            'users' => [],
+        ];
+
+        $currentUserData = [
+            'has_picked' => false,
+            'pick_id' => null,
+            'recommendation_code' => null,
+        ];
+
+        if ($currentUser) {
+            $userPick = UserPick::where('user_id', $currentUser->id)
+                ->where('product_id', $product->id)
+                ->first();
+
+            if ($userPick) {
+                $currentUserData = [
+                    'has_picked' => true,
+                    'pick_id' => $userPick->id,
+                    'recommendation_code' => $userPick->recommendation_code,
+                ];
+            }
+
+            $friendIds = $currentUser->friendIds();
+            if (! empty($friendIds)) {
+                $friendPicksQuery = UserPick::with(['user.profile', 'user.communityShop'])
+                    ->where('product_id', $product->id)
+                    ->where('is_public', true)
+                    ->whereIn('user_id', $friendIds)
+                    ->latest('id');
+
+                $friendPicksCount = $friendPicksQuery->count();
+                $friendPicks = $friendPicksQuery->limit(5)->get();
+
+                $pickedByFriendsData = [
+                    'count' => $friendPicksCount,
+                    'users' => $friendPicks->map(function ($pick) use ($currentUser) {
+                        $friend = $pick->user;
+                        return [
+                            'id' => $friend->id,
+                            'name' => $friend->name,
+                            'username' => $friend->username,
+                            'avatar_url' => $friend->profile?->avatar_url ?? $friend->profile?->avatar_path,
+                            'locality' => $friend->profile?->locality ?? 'Jashore',
+                            'bio' => $friend->profile?->bio,
+                            'profile_url' => "/users/{$friend->username}",
+                            'caption' => $pick->caption,
+                            'recommendation_code' => $pick->recommendation_code,
+                            'has_shop' => $friend->isCommunitySeller(),
+                            'shop_slug' => $friend->communityShop?->slug,
+                            'mutual_friends_count' => $currentUser->mutualFriendsCountWith($friend),
+                        ];
+                    })->values()->all(),
+                ];
+            }
         }
 
         return response()->json([
@@ -211,6 +324,8 @@ class ProductController extends Controller
                     'alt_text' => $img->alt_text,
                 ]),
                 'active_campaign' => $activeCampaignData,
+                'picked_by_friends' => $pickedByFriendsData,
+                'current_user' => $currentUserData,
             ]),
         ]);
     }

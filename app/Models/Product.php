@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -110,6 +111,12 @@ class Product extends Model
         'rating_avg',
         'rating_count',
         'tags',
+    ];
+
+    protected $appends = [
+        'image',
+        'effective_stock',
+        'discount_percent',
     ];
 
     protected function casts(): array
@@ -262,6 +269,13 @@ class Product extends Model
     public function userPicks(): HasMany
     {
         return $this->hasMany(UserPick::class);
+    }
+
+    public function pickedByUsers(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'user_picks')
+            ->withPivot(['caption', 'display_order', 'is_featured', 'is_public', 'recommendation_code'])
+            ->withTimestamps();
     }
 
     public function shopListings(): HasMany

@@ -72,6 +72,8 @@ class CommunityDropController extends Controller
             'product.primaryImage',
             'product.category',
             'product.seller',
+            'product.specifications.attribute',
+            'product.specifications.attributeItem',
             'variant',
             'organizer.profile',
         ])
@@ -124,6 +126,8 @@ class CommunityDropController extends Controller
             'product.primaryImage',
             'product.category',
             'product.seller',
+            'product.specifications.attribute',
+            'product.specifications.attributeItem',
             'variant',
             'organizer.profile',
         ])
@@ -177,6 +181,8 @@ class CommunityDropController extends Controller
             'product.primaryImage',
             'product.category',
             'product.seller',
+            'product.specifications.attribute',
+            'product.specifications.attributeItem',
             'variant',
             'organizer.profile',
         ])
@@ -452,11 +458,20 @@ class CommunityDropController extends Controller
         $curatorName = $c->organizer?->name ?? 'Community Organizer';
         $curatorHandle = $c->organizer?->username ?? 'community';
 
+        $specs = $product?->specifications?->map(fn ($spec) => [
+            'id' => $spec->id,
+            'attribute_name' => $spec->attribute?->name,
+            'attribute_slug' => $spec->attribute?->slug,
+            'value' => $spec->attributeItem?->label ?? $spec->custom_value,
+            'color_code' => $spec->attributeItem?->color_code,
+        ])->values()->all() ?? [];
+
         return [
             'id' => $c->id,
             'campaign_code' => $c->campaign_code,
             'title' => $c->title,
             'description' => $product?->description ?? "Community volume drop for {$c->title}.",
+            'specifications' => $specs,
             'category' => $product?->category?->name ?? 'Community Finds',
             'category_slug' => $product?->category?->slug,
             'image' => $product?->primaryImage?->thumbnail_url ?? $product?->primaryImage?->image_url ?? $product?->image,
@@ -489,8 +504,12 @@ class CommunityDropController extends Controller
                 'title' => $product->title,
                 'slug' => $product->slug,
                 'base_price' => (float) $product->base_price,
+                'description' => $product->description,
+                'specifications' => $specs,
                 'is_free_shipping' => (bool) $product->is_free_shipping,
                 'shipping_charge' => $product->shipping_charge !== null ? (float) $product->shipping_charge : null,
+                'is_returnable' => (bool) $product->is_returnable,
+                'return_window_days' => $product->return_window_days ?? 7,
                 'seller' => $product->seller ? [
                     'id' => $product->seller->id,
                     'store_name' => $product->seller->store_name,
