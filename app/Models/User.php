@@ -134,6 +134,22 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     }
 
     /**
+     * Product comments authored by user.
+     */
+    public function comments(): HasMany
+    {
+        return $this->hasMany(ProductComment::class);
+    }
+
+    /**
+     * Comment reactions submitted by user.
+     */
+    public function commentReactions(): HasMany
+    {
+        return $this->hasMany(CommentReaction::class);
+    }
+
+    /**
      * Append-only earnings ledger transactions.
      */
     public function earningsLedgers(): HasMany

@@ -269,6 +269,16 @@ class Product extends Model
         return $this->hasMany(ShopListing::class);
     }
 
+    public function comments(): HasMany
+    {
+        return $this->hasMany(ProductComment::class);
+    }
+
+    public function rootComments(): HasMany
+    {
+        return $this->hasMany(ProductComment::class)->whereNull('parent_id');
+    }
+
     /**
      * Helper to get effective discount percentage if compare_price is set.
      */

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AdminAttributeController;
 use App\Http\Controllers\Api\AdminCategoryController;
+use App\Http\Controllers\Api\AdminCommentModerationController;
 use App\Http\Controllers\Api\AdminCommunityController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminGroupBuyController;
@@ -20,6 +21,7 @@ use App\Http\Controllers\Api\FriendController;
 use App\Http\Controllers\Api\LeaderboardController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrderController;
+use App\Http\Controllers\Api\ProductCommentController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\SellerController;
 use App\Http\Controllers\Api\UserFollowController;
@@ -180,7 +182,43 @@ Route::prefix('products')->group(function () {
     Route::get('/', [ProductController::class, 'index']);
     Route::get('/featured', [ProductController::class, 'featured']);
     Route::get('/{slug}', [ProductController::class, 'show']);
-    Route::get('/{slug}/active-campaign', [ProductController::class, 'activeCampaign']);
+});
+
+/*
+|--------------------------------------------------------------------------
+| Product Comment & Reaction Center Routes (/api/products/.../comments, /api/comments/...)
+|--------------------------------------------------------------------------
+*/
+Route::prefix('products/{productId}/comments')->group(function () {
+    Route::get('/get-comments', [ProductCommentController::class, 'index'])->name('comments.list');
+    Route::get('/get-summary', [ProductCommentController::class, 'summary'])->name('comments.summary');
+    Route::middleware('auth:sanctum')->post('/add-comment', [ProductCommentController::class, 'store'])->name('comments.store');
+
+    // Compatibility aliases
+    Route::get('/', [ProductCommentController::class, 'index']);
+    Route::get('/summary', [ProductCommentController::class, 'summary']);
+    Route::middleware('auth:sanctum')->post('/', [ProductCommentController::class, 'store']);
+});
+
+Route::prefix('comments')->group(function () {
+    Route::get('/get-comment/{id}', [ProductCommentController::class, 'show'])->name('comments.show');
+
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::match(['put', 'patch'], '/update-comment/{id}', [ProductCommentController::class, 'update'])->name('comments.update');
+        Route::delete('/delete-comment/{id}', [ProductCommentController::class, 'destroy'])->name('comments.delete');
+        Route::post('/toggle-reaction/{id}', [ProductCommentController::class, 'toggleReaction'])->name('comments.reaction');
+        Route::post('/report-comment/{id}', [ProductCommentController::class, 'report'])->name('comments.report');
+
+        // Compatibility aliases
+        Route::put('/{id}', [ProductCommentController::class, 'update']);
+        Route::delete('/{id}', [ProductCommentController::class, 'destroy']);
+        Route::post('/{id}/reactions', [ProductCommentController::class, 'toggleReaction']);
+        Route::delete('/{id}/reactions', [ProductCommentController::class, 'toggleReaction']);
+        Route::post('/{id}/reports', [ProductCommentController::class, 'report']);
+    });
+
+    // Public single comment alias
+    Route::get('/{id}', [ProductCommentController::class, 'show']);
 });
 
 /*
@@ -512,6 +550,14 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
         Route::get('/get-settlement-report', [AdminCommunityController::class, 'settlementReport'])->name('admin.community.settlement-report');
     });
 
+    // Admin Comment Moderation
+    Route::prefix('comments')->group(function () {
+        Route::get('/get-reports', [AdminCommentModerationController::class, 'reports'])->name('admin.comments.reports');
+        Route::post('/resolve-report/{id}', [AdminCommentModerationController::class, 'resolveReport'])->name('admin.comments.resolve-report');
+        Route::patch('/update-status/{id}', [AdminCommentModerationController::class, 'updateStatus'])->name('admin.comments.update-status');
+        Route::delete('/delete-comment/{id}', [AdminCommentModerationController::class, 'destroy'])->name('admin.comments.delete');
+    });
+
     // ------------------------------------------------------------------------
     // Admin Compatibility Aliases
     // ------------------------------------------------------------------------
@@ -573,4 +619,9 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('/community/payouts', [AdminCommunityController::class, 'payouts']);
     Route::post('/community/payouts/{id}/process', [AdminCommunityController::class, 'processPayout']);
     Route::get('/community/settlement-report', [AdminCommunityController::class, 'settlementReport']);
+
+    Route::get('/comments/reports', [AdminCommentModerationController::class, 'reports']);
+    Route::post('/comments/reports/{id}/resolve', [AdminCommentModerationController::class, 'resolveReport']);
+    Route::patch('/comments/{id}/status', [AdminCommentModerationController::class, 'updateStatus']);
+    Route::delete('/comments/{id}', [AdminCommentModerationController::class, 'destroy']);
 });
