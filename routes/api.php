@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AdminAttributeController;
+use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminCommunityController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminGroupBuyController;
@@ -429,9 +430,15 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
         Route::patch('/update-seller-status/{id}', [AdminController::class, 'updateSellerStatus'])->name('admin.sellers.update-status');
     });
 
-    // Categories lookup
+    // Admin Categories Management
     Route::prefix('categories')->group(function () {
+        Route::get('/get-categories', [AdminCategoryController::class, 'index'])->name('admin.categories.list');
+        Route::get('/get-parents', [AdminCategoryController::class, 'parents'])->name('admin.categories.parents');
         Route::get('/get-categories-lookup', [AdminProductController::class, 'categoriesLookup'])->name('admin.categories.lookup');
+        Route::post('/add-category', [AdminCategoryController::class, 'store'])->name('admin.categories.create');
+        Route::get('/get-category/{id}', [AdminCategoryController::class, 'show'])->name('admin.categories.show');
+        Route::match(['put', 'patch'], '/update-category/{id}', [AdminCategoryController::class, 'update'])->name('admin.categories.update');
+        Route::delete('/delete-category/{id}', [AdminCategoryController::class, 'destroy'])->name('admin.categories.delete');
     });
 
     // Admin Products Catalog
@@ -514,6 +521,12 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::patch('/sellers/{id}/status', [AdminController::class, 'updateSellerStatus']);
     Route::patch('/products/{id}', [AdminController::class, 'updateProduct']);
 
+    Route::get('/categories', [AdminCategoryController::class, 'index']);
+    Route::get('/categories/parents', [AdminCategoryController::class, 'parents']);
+    Route::post('/categories', [AdminCategoryController::class, 'store']);
+    Route::get('/categories/{id}', [AdminCategoryController::class, 'show']);
+    Route::put('/categories/{id}', [AdminCategoryController::class, 'update']);
+    Route::delete('/categories/{id}', [AdminCategoryController::class, 'destroy']);
     Route::get('/categories-lookup', [AdminProductController::class, 'categoriesLookup']);
     Route::get('/products', [AdminProductController::class, 'index']);
     Route::post('/products', [AdminProductController::class, 'store']);
