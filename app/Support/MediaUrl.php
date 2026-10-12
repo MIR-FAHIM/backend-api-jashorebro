@@ -59,7 +59,7 @@ class MediaUrl
             return $base . $matches[1];
         }
 
-        if (preg_match('#^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(/(?:uploads|images|products|categories|shops)/.*)$#i', $url, $matches)) {
+        if (preg_match('#^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(/(?:uploads|images|products|categories|shops|avatars|covers)/.*)$#i', $url, $matches)) {
             return "{$base}/storage" . $matches[1];
         }
 
@@ -77,7 +77,7 @@ class MediaUrl
         }
 
         // If relative file path like products/... or categories/...
-        if (preg_match('#^(?:products|categories|shops|avatars|uploads)/#i', $url)) {
+        if (preg_match('#^(?:products|categories|shops|avatars|covers|uploads)/#i', $url)) {
             return "{$base}/storage/{$url}";
         }
 

@@ -63,6 +63,11 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
         'remember_token',
     ];
 
+    protected $appends = [
+        'avatar_url',
+        'cover_url',
+    ];
+
     /**
      * Get the attributes that should be cast.
      *
@@ -85,6 +90,16 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     public function profile(): HasOne
     {
         return $this->hasOne(UserProfile::class);
+    }
+
+    public function getAvatarUrlAttribute(): ?string
+    {
+        return $this->profile?->avatar_url;
+    }
+
+    public function getCoverUrlAttribute(): ?string
+    {
+        return $this->profile?->cover_image_url;
     }
 
     /**

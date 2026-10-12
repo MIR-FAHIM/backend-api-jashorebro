@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\SellerController;
 use App\Http\Controllers\Api\UserFollowController;
 use App\Http\Controllers\Api\UserPickController;
+use App\Http\Controllers\Api\UserProfileController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -87,8 +88,17 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 */
 Route::prefix('profile')->middleware('auth:sanctum')->group(function () {
     Route::get('/get-profile-summary', [FriendController::class, 'summary'])->name('profile.summary');
-    // Compatibility alias
+    Route::post('/upload-avatar', [UserProfileController::class, 'uploadAvatar'])->name('profile.upload-avatar');
+    Route::post('/upload-cover', [UserProfileController::class, 'uploadCover'])->name('profile.upload-cover');
+    Route::post('/update-profile', [UserProfileController::class, 'update'])->name('profile.update-profile');
+    Route::delete('/remove-avatar', [UserProfileController::class, 'removeAvatar'])->name('profile.remove-avatar');
+    Route::delete('/remove-cover', [UserProfileController::class, 'removeCover'])->name('profile.remove-cover');
+
+    // Compatibility aliases
     Route::get('/summary', [FriendController::class, 'summary']);
+    Route::post('/avatar', [UserProfileController::class, 'uploadAvatar']);
+    Route::post('/cover', [UserProfileController::class, 'uploadCover']);
+    Route::match(['put', 'post'], '/update', [UserProfileController::class, 'update']);
 });
 
 Route::prefix('users')->group(function () {

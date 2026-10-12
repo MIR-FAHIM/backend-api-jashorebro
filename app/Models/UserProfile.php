@@ -43,6 +43,11 @@ class UserProfile extends Model
         return MediaUrl::resolve(null, $this->cover_image_path);
     }
 
+    public function getCoverUrlAttribute(): ?string
+    {
+        return $this->cover_image_url;
+    }
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);

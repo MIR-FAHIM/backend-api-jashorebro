@@ -510,8 +510,8 @@ class FriendController extends Controller
                 'is_community_seller' => $user->isCommunitySeller(),
                 'profile' => [
                     'bio' => $user->profile?->bio ?? 'Community member in JashoreBro.',
-                    'avatar_url' => $user->profile?->avatar_path,
-                    'cover_url' => $user->profile?->cover_image_path,
+                    'avatar_url' => $user->profile?->avatar_url,
+                    'cover_url' => $user->profile?->cover_image_url,
                     'locality' => $user->profile?->locality ?? 'Jashore',
                     'district' => 'Jashore',
                     'website_url' => $user->profile?->website_url,
@@ -601,7 +601,7 @@ class FriendController extends Controller
     public function summary(Request $request): JsonResponse
     {
         /** @var User $user */
-        $user = $request->user()->load('profile');
+        $user = $request->user()->fresh(['profile']) ?? $request->user();
 
         $friendIds = $user->friendIds();
         $friendsCount = count($friendIds);
@@ -628,6 +628,7 @@ class FriendController extends Controller
                     'phone' => $user->phone,
                     'phone_verified' => $user->isPhoneVerified(),
                     'avatar_url' => $user->profile?->avatar_url,
+                    'cover_url' => $user->profile?->cover_image_url,
                     'bio' => $user->profile?->bio,
                     'locality' => $user->profile?->locality ?? 'Jashore',
                     'district' => $user->profile?->district ?? 'Jashore',
