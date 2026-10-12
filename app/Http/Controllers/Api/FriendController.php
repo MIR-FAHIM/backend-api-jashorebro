@@ -40,11 +40,14 @@ class FriendController extends Controller
         $friends = $query->paginate(20);
 
         $data = $friends->getCollection()->map(function (User $friend) use ($currentUser) {
+            $avatar = $friend->avatar_url ?? $friend->profile?->avatar_url;
+
             return [
                 'id' => $friend->id,
                 'name' => $friend->name,
                 'username' => $friend->username,
-                'avatar_url' => $friend->profile?->avatar_url,
+                'avatar_url' => $avatar,
+                'avatar' => $avatar,
                 'locality' => $friend->profile?->locality ?? 'Jashore',
                 'bio' => $friend->profile?->bio,
                 'mutual_friends_count' => $currentUser->mutualFriendsCountWith($friend),
@@ -77,6 +80,8 @@ class FriendController extends Controller
             ->latest()
             ->get()
             ->map(function (Friendship $req) use ($currentUser) {
+                $senderAvatar = $req->sender->avatar_url ?? $req->sender->profile?->avatar_url;
+
                 return [
                     'id' => $req->id,
                     'created_at' => $req->created_at?->toIso8601String(),
@@ -84,7 +89,8 @@ class FriendController extends Controller
                         'id' => $req->sender->id,
                         'name' => $req->sender->name,
                         'username' => $req->sender->username,
-                        'avatar_url' => $req->sender->profile?->avatar_url,
+                        'avatar_url' => $senderAvatar,
+                        'avatar' => $senderAvatar,
                         'locality' => $req->sender->profile?->locality ?? 'Jashore',
                         'mutual_friends_count' => $currentUser->mutualFriendsCountWith($req->sender),
                     ],
@@ -97,6 +103,8 @@ class FriendController extends Controller
             ->latest()
             ->get()
             ->map(function (Friendship $req) use ($currentUser) {
+                $recipientAvatar = $req->recipient->avatar_url ?? $req->recipient->profile?->avatar_url;
+
                 return [
                     'id' => $req->id,
                     'created_at' => $req->created_at?->toIso8601String(),
@@ -104,7 +112,8 @@ class FriendController extends Controller
                         'id' => $req->recipient->id,
                         'name' => $req->recipient->name,
                         'username' => $req->recipient->username,
-                        'avatar_url' => $req->recipient->profile?->avatar_url,
+                        'avatar_url' => $recipientAvatar,
+                        'avatar' => $recipientAvatar,
                         'locality' => $req->recipient->profile?->locality ?? 'Jashore',
                         'mutual_friends_count' => $currentUser->mutualFriendsCountWith($req->recipient),
                     ],
@@ -354,12 +363,14 @@ class FriendController extends Controller
             ->get()
             ->map(function (User $user) use ($currentUser) {
                 $friendship = $currentUser->friendshipWith($user);
+                $avatar = $user->avatar_url ?? $user->profile?->avatar_url;
 
                 return [
                     'id' => $user->id,
                     'name' => $user->name,
                     'username' => $user->username,
-                    'avatar_url' => $user->profile?->avatar_url,
+                    'avatar_url' => $avatar,
+                    'avatar' => $avatar,
                     'locality' => $user->profile?->locality ?? 'Jashore',
                     'bio' => $user->profile?->bio,
                     'mutual_friends_count' => $currentUser->mutualFriendsCountWith($user),
@@ -401,17 +412,38 @@ class FriendController extends Controller
 
         $excludedIds = array_unique(array_merge($excludedIds, $pendingIds));
 
-        $suggestions = User::with('profile')
+        $suggestionsQuery = User::with('profile')
             ->whereNotIn('id', $excludedIds)
-            ->where('status', 'active')
-            ->limit(15)
+            ->where('status', 'active');
+
+        // Filter only users with role_id = 6 (via UserRole / roles relation, or direct column)
+        $suggestionsQuery->where(function ($q) {
+            $matched = false;
+            if (\Illuminate\Support\Facades\Schema::hasColumn('users', 'role_id')) {
+                $q->where('users.role_id', 6);
+                $matched = true;
+            }
+
+            if (\Illuminate\Support\Facades\Schema::hasTable('user_roles')) {
+                if ($matched) {
+                    $q->orWhereHas('userRoles', fn ($rq) => $rq->where('role_id', 6));
+                } else {
+                    $q->whereHas('userRoles', fn ($rq) => $rq->where('role_id', 6));
+                }
+            }
+        });
+
+        $suggestions = $suggestionsQuery->limit(15)
             ->get()
             ->map(function (User $user) use ($currentUser) {
+                $avatar = $user->avatar_url ?? $user->profile?->avatar_url;
+
                 return [
                     'id' => $user->id,
                     'name' => $user->name,
                     'username' => $user->username,
-                    'avatar_url' => $user->profile?->avatar_url,
+                    'avatar_url' => $avatar,
+                    'avatar' => $avatar,
                     'locality' => $user->profile?->locality ?? 'Jashore',
                     'bio' => $user->profile?->bio,
                     'mutual_friends_count' => $currentUser->mutualFriendsCountWith($user),

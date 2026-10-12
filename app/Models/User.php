@@ -94,12 +94,48 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
 
     public function getAvatarUrlAttribute(): ?string
     {
-        return $this->profile?->avatar_url;
+        if ($this->relationLoaded('profile') && $this->profile && ! empty($this->profile->avatar_url)) {
+            return $this->profile->avatar_url;
+        }
+
+        if ($this->profile && ! empty($this->profile->avatar_url)) {
+            return $this->profile->avatar_url;
+        }
+
+        $directPath = $this->avatar_path
+            ?? $this->avatar
+            ?? $this->profile_photo_path
+            ?? $this->profile_photo_url
+            ?? $this->image
+            ?? null;
+
+        if (! empty($directPath)) {
+            return \App\Support\MediaUrl::resolve(null, $directPath);
+        }
+
+        return null;
     }
 
     public function getCoverUrlAttribute(): ?string
     {
-        return $this->profile?->cover_image_url;
+        if ($this->relationLoaded('profile') && $this->profile && ! empty($this->profile->cover_url)) {
+            return $this->profile->cover_url;
+        }
+
+        if ($this->profile && ! empty($this->profile->cover_url)) {
+            return $this->profile->cover_url;
+        }
+
+        $directPath = $this->cover_image_path
+            ?? $this->cover_path
+            ?? $this->cover
+            ?? null;
+
+        if (! empty($directPath)) {
+            return \App\Support\MediaUrl::resolve(null, $directPath);
+        }
+
+        return null;
     }
 
     /**
@@ -213,6 +249,14 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
         }
 
         return $this->communityShop()->whereIn('status', ['active', 'verified'])->exists();
+    }
+
+    /**
+     * User-role pivot associations.
+     */
+    public function userRoles(): HasMany
+    {
+        return $this->hasMany(UserRole::class);
     }
 
     /**

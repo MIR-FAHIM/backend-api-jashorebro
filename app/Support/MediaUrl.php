@@ -42,45 +42,59 @@ class MediaUrl
      */
     public static function resolve(?string $url, ?string $filePath = null): ?string
     {
+        $target = ! empty($url) ? $url : $filePath;
+
+        if (empty($target)) {
+            return null;
+        }
+
+        $target = trim((string) $target);
         $base = self::getBaseUrl();
 
-        // If URL is empty but file path is provided
-        if (empty($url) && ! empty($filePath)) {
-            $path = ltrim($filePath, '/');
-            return "{$base}/storage/{$path}";
-        }
+        // 1. Remove double storage prefixes if present
+        $target = preg_replace('#^https?://[^/]+/storage/storage/#i', "{$base}/storage/", $target);
+        $target = preg_replace('#^/storage/storage/#i', '/storage/', $target);
+        $target = preg_replace('#^storage/storage/#i', 'storage/', $target);
 
-        if (empty($url)) {
-            return $url;
-        }
-
-        // If URL contains localhost or 127.0.0.1 (with or without port)
-        if (preg_match('#^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(/storage/.*)$#i', $url, $matches)) {
+        // 2. If URL contains localhost or 127.0.0.1 (with or without port)
+        if (preg_match('#^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(/storage/.*)$#i', $target, $matches)) {
             return $base . $matches[1];
         }
 
-        if (preg_match('#^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(/(?:uploads|images|products|categories|shops|avatars|covers)/.*)$#i', $url, $matches)) {
+        if (preg_match('#^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(/(?:uploads|images|products|categories|shops|avatars|covers)/.*)$#i', $target, $matches)) {
             return "{$base}/storage" . $matches[1];
         }
 
-        if (preg_match('#^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?/(.+)$#i', $url, $matches)) {
+        if (preg_match('#^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?/(.+)$#i', $target, $matches)) {
             return "{$base}/" . ltrim($matches[1], '/');
         }
 
-        // If relative storage path (/storage/... or storage/...)
-        if (str_starts_with($url, '/storage/')) {
-            return $base . $url;
+        // 3. If already absolute HTTP/HTTPS URL
+        if (preg_match('#^https?://#i', $target)) {
+            return $target;
         }
 
-        if (str_starts_with($url, 'storage/')) {
-            return "{$base}/{$url}";
+        // 4. Strip public/ prefix if any
+        if (str_starts_with($target, 'public/')) {
+            $target = substr($target, 7);
+        } elseif (str_starts_with($target, '/public/')) {
+            $target = substr($target, 8);
         }
 
-        // If relative file path like products/... or categories/...
-        if (preg_match('#^(?:products|categories|shops|avatars|covers|uploads)/#i', $url)) {
-            return "{$base}/storage/{$url}";
+        // 5. If relative storage path (/storage/... or storage/...)
+        if (str_starts_with($target, '/storage/')) {
+            return $base . $target;
         }
 
-        return $url;
+        if (str_starts_with($target, 'storage/')) {
+            return "{$base}/{$target}";
+        }
+
+        // 6. If relative file path like products/... or categories/... or avatars/...
+        if (preg_match('#^(?:products|categories|shops|avatars|covers|uploads|images)/#i', $target)) {
+            return "{$base}/storage/{$target}";
+        }
+
+        return "{$base}/storage/" . ltrim($target, '/');
     }
 }
