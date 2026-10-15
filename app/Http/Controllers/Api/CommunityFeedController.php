@@ -3,158 +3,43 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\GroupBuyCampaign;
-use App\Models\GroupBuyParticipant;
-use App\Models\Product;
-use App\Models\UserPick;
+use App\Models\FeedFeedback;
+use App\Services\CommunityFeedService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class CommunityFeedController extends Controller
 {
+    public function __construct(
+        protected CommunityFeedService $feedService
+    ) {}
+
     /**
-     * Public / authenticated community discovery feed.
+     * Public / authenticated community discovery feed (For You or filtered).
      */
     public function index(Request $request): JsonResponse
     {
-        $user = $request->user('sanctum');
-        $filter = $request->query('filter', 'For you');
-        $categorySlug = $request->query('category');
+        $viewer = $request->user('sanctum');
+        $params = $request->all();
 
-        $query = GroupBuyCampaign::with([
-            'product.primaryImage',
-            'product.category',
-            'product.seller',
-            'variant',
-            'organizer.profile',
-        ])
-            ->where('status', 'active')
-            ->where(function ($q) {
-                $q->whereNull('end_at')->orWhere('end_at', '>', now());
-            });
-
-        // Filter by specific category or filter tab
-        if (! empty($categorySlug) && $categorySlug !== 'all') {
-            $query->whereHas('product.category', function ($q) use ($categorySlug) {
-                $q->where('slug', $categorySlug);
-            });
-        } elseif ($filter !== 'For you' && $filter !== 'Following') {
-            $query->whereHas('product.category', function ($q) use ($filter) {
-                $q->where('name', 'like', "%{$filter}%")->orWhere('slug', strtolower($filter));
-            });
-        }
-
-        // Handle Following tab
-        if ($filter === 'Following') {
-            if (! $user) {
-                return response()->json([
-                    'success' => true,
-                    'data' => [],
-                    'requires_auth' => true,
-                    'message' => 'Sign in to see drops and picks from community curators you follow.',
-                ]);
-            }
-
-            $followedUserIds = $user->following()->pluck('followed_user_id')->toArray();
-            if (empty($followedUserIds)) {
-                return response()->json([
-                    'success' => true,
-                    'data' => [],
-                    'message' => 'You are not following any curators yet. Explore the community feed to follow curators.',
-                ]);
-            }
-
-            $query->whereIn('organizer_user_id', $followedUserIds);
-        }
-
-        $campaigns = $query->orderBy('id', 'desc')->paginate(15);
-
-        // Pre-fetch joined campaign IDs for authenticated user
-        $joinedCampaignIds = [];
-        if ($user) {
-            $joinedCampaignIds = GroupBuyParticipant::where('user_id', $user->id)
-                ->whereIn('status', ['reserved', 'confirmed'])
-                ->pluck('campaign_id')
-                ->unique()
-                ->toArray();
-        }
-
-        $items = $campaigns->getCollection()->map(function (GroupBuyCampaign $c) use ($joinedCampaignIds) {
-            $product = $c->product;
-            $distinctParticipants = $c->participants()
-                ->whereIn('status', ['reserved', 'confirmed'])
-                ->distinct('user_id')
-                ->count('user_id');
-
-            $target = (int) $c->target_participants;
-            $progressPercent = $target > 0 ? min(100, round(($distinctParticipants / $target) * 100)) : 0;
-            $remainingNeeded = max(0, $target - $distinctParticipants);
-
-            $retailPrice = (float) ($product?->base_price ?? $c->group_price);
-            $groupPrice = (float) $c->group_price;
-
-            $endsIn = null;
-            if ($c->end_at) {
-                $diff = now()->diff($c->end_at);
-                if ($c->end_at->isPast()) {
-                    $endsIn = 'Ended';
-                } elseif ($diff->days > 0) {
-                    $endsIn = "{$diff->days}d {$diff->h}h";
-                } elseif ($diff->h > 0) {
-                    $endsIn = "{$diff->h}h {$diff->i}m";
-                } else {
-                    $endsIn = "{$diff->i}m";
+        // Preserve legacy filter tab mapping if passed
+        if ($request->has('filter') && ! $request->has('tab')) {
+            $filter = $request->query('filter');
+            if ($filter === 'Following') {
+                $params['tab'] = 'following';
+            } elseif ($filter === 'Trending') {
+                $params['tab'] = 'trending';
+            } else {
+                $params['tab'] = 'for_you';
+                if ($filter !== 'For you' && ! empty($filter)) {
+                    $params['category'] = strtolower($filter);
                 }
             }
+        }
 
-            $tiers = [
-                ['requiredParticipants' => 1, 'price' => $retailPrice],
-                ['requiredParticipants' => $target, 'price' => $groupPrice],
-            ];
+        $result = $this->feedService->getFeed($viewer, $params);
 
-            return [
-                'id' => $c->id,
-                'campaign_code' => $c->campaign_code,
-                'title' => $c->title,
-                'category' => $product?->category?->name ?? 'Artisan Goods',
-                'category_slug' => $product?->category?->slug,
-                'image' => $product?->primaryImage?->thumbnail_url ?? $product?->image,
-                'retailPrice' => $retailPrice,
-                'retail_price' => $retailPrice,
-                'groupPrice' => $groupPrice,
-                'group_price' => $groupPrice,
-                'currentParticipants' => $distinctParticipants,
-                'current_participants' => $distinctParticipants,
-                'target_participants' => $target,
-                'progress_percent' => $progressPercent,
-                'remaining_needed' => $remainingNeeded,
-                'isJoined' => in_array($c->id, $joinedCampaignIds),
-                'is_joined' => in_array($c->id, $joinedCampaignIds),
-                'endsIn' => $endsIn,
-                'ends_in' => $endsIn,
-                'end_at' => $c->end_at?->toIso8601String(),
-                'status' => $c->status,
-                'curator' => [
-                    'id' => $c->organizer?->id ?? $c->created_by,
-                    'name' => $c->organizer?->name ?? 'Community Organizer',
-                    'handle' => $c->organizer?->username ?? 'community',
-                    'username' => $c->organizer?->username ?? 'community',
-                    'avatar_url' => $c->organizer?->profile?->avatar_url,
-                ],
-                'recommendation' => "Community volume drop for {$product?->title}. Join to unlock ৳{$groupPrice}!",
-                'tiers' => $tiers,
-            ];
-        });
-
-        return response()->json([
-            'success' => true,
-            'data' => $items,
-            'meta' => [
-                'current_page' => $campaigns->currentPage(),
-                'last_page' => $campaigns->lastPage(),
-                'total' => $campaigns->total(),
-            ],
-        ]);
+        return response()->json($result);
     }
 
     /**
@@ -162,75 +47,85 @@ class CommunityFeedController extends Controller
      */
     public function following(Request $request): JsonResponse
     {
+        $viewer = $request->user('sanctum') ?? $request->user();
+        $params = array_merge($request->all(), ['tab' => 'following']);
+
+        $result = $this->feedService->getFeed($viewer, $params);
+
+        return response()->json($result);
+    }
+
+    /**
+     * Trending momentum feed.
+     */
+    public function trending(Request $request): JsonResponse
+    {
+        $viewer = $request->user('sanctum');
+        $params = array_merge($request->all(), ['tab' => 'trending']);
+
+        $result = $this->feedService->getFeed($viewer, $params);
+
+        return response()->json($result);
+    }
+
+    /**
+     * User feed preference & suppression feedback (Hide, Less like this, Mute).
+     */
+    public function addFeedback(Request $request): JsonResponse
+    {
         $user = $request->user();
-        $followedUserIds = $user->following()->pluck('followed_user_id')->toArray();
 
-        if (empty($followedUserIds)) {
-            return response()->json([
-                'success' => true,
-                'data' => [],
-                'message' => 'You are not following any curators yet.',
-            ]);
-        }
+        $validated = $request->validate([
+            'feed_item_id' => 'nullable|string|max:100',
+            'content_type' => 'nullable|string|max:50',
+            'source_id' => 'nullable|integer',
+            'action' => 'required|in:' . implode(',', [
+                FeedFeedback::ACTION_HIDE,
+                FeedFeedback::ACTION_LESS_LIKE_THIS,
+                FeedFeedback::ACTION_MUTE_AUTHOR,
+                FeedFeedback::ACTION_MUTE_TOPIC,
+            ]),
+            'target_author_id' => 'nullable|integer|exists:users,id',
+            'reason' => 'nullable|string|max:255',
+        ]);
 
-        // Fetch drops organized by followed users
-        $campaigns = GroupBuyCampaign::with([
-            'product.primaryImage',
-            'product.category',
-            'organizer.profile',
-        ])
-            ->whereIn('organizer_user_id', $followedUserIds)
-            ->where('status', 'active')
-            ->orderBy('id', 'desc')
-            ->limit(20)
-            ->get();
-
-        $joinedCampaignIds = GroupBuyParticipant::where('user_id', $user->id)
-            ->whereIn('status', ['reserved', 'confirmed'])
-            ->pluck('campaign_id')
-            ->unique()
-            ->toArray();
-
-        $items = $campaigns->map(function (GroupBuyCampaign $c) use ($joinedCampaignIds) {
-            $product = $c->product;
-            $distinctParticipants = $c->participants()
-                ->whereIn('status', ['reserved', 'confirmed'])
-                ->distinct('user_id')
-                ->count('user_id');
-
-            $target = (int) $c->target_participants;
-            $retailPrice = (float) ($product?->base_price ?? $c->group_price);
-            $groupPrice = (float) $c->group_price;
-
-            return [
-                'id' => $c->id,
-                'campaign_code' => $c->campaign_code,
-                'title' => $c->title,
-                'category' => $product?->category?->name ?? 'Artisan Goods',
-                'image' => $product?->primaryImage?->thumbnail_url ?? $product?->image,
-                'retailPrice' => $retailPrice,
-                'groupPrice' => $groupPrice,
-                'currentParticipants' => $distinctParticipants,
-                'target_participants' => $target,
-                'progress_percent' => $target > 0 ? min(100, round(($distinctParticipants / $target) * 100)) : 0,
-                'isJoined' => in_array($c->id, $joinedCampaignIds),
-                'status' => $c->status,
-                'curator' => [
-                    'id' => $c->organizer?->id,
-                    'name' => $c->organizer?->name ?? 'Curator',
-                    'handle' => $c->organizer?->username ?? 'curator',
-                ],
-                'recommendation' => "Community volume drop by {$c->organizer?->name}.",
-                'tiers' => [
-                    ['requiredParticipants' => 1, 'price' => $retailPrice],
-                    ['requiredParticipants' => $target, 'price' => $groupPrice],
-                ],
-            ];
-        });
+        $feedback = $this->feedService->addFeedback($user, $validated);
 
         return response()->json([
             'success' => true,
-            'data' => $items,
+            'message' => 'Feed preference saved successfully.',
+            'feedback' => $feedback,
+        ]);
+    }
+
+    /**
+     * Deduplicated batch impression telemetry.
+     */
+    public function addImpressions(Request $request): JsonResponse
+    {
+        $viewer = $request->user('sanctum');
+
+        $validated = $request->validate([
+            'impressions' => 'required|array|min:1|max:100',
+            'impressions.*.feed_item_id' => 'required|string',
+            'impressions.*.content_type' => 'nullable|string',
+            'impressions.*.source_id' => 'nullable|integer',
+            'impressions.*.tab' => 'nullable|string',
+            'impressions.*.position' => 'nullable|integer',
+            'impressions.*.event_type' => 'nullable|string',
+            'session_id' => 'nullable|string|max:100',
+        ]);
+
+        $count = $this->feedService->recordImpressions(
+            viewer: $viewer,
+            impressions: $validated['impressions'],
+            sessionId: $validated['session_id'] ?? null
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "Logged {$count} feed impressions.",
+            'count' => $count,
         ]);
     }
 }

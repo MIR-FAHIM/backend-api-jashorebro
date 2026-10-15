@@ -256,6 +256,26 @@ class CommunityShopController extends Controller
     }
 
     /**
+     * Private resale terms for an authenticated owner of a community shop.
+     */
+    public function productResaleTerms(Request $request, int $productId): JsonResponse
+    {
+        if (! CommunityShop::where('user_id', $request->user()->id)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Create your own community shop before viewing product resale terms.',
+            ], 404);
+        }
+
+        $product = Product::publiclyAvailable()->findOrFail($productId);
+
+        return response()->json([
+            'success' => true,
+            'data' => $this->commercialService->resolveShopResaleTerms($product),
+        ]);
+    }
+
+    /**
      * Add a product to the user's personal shop ("Add to My Shop").
      */
     public function storeListing(Request $request): JsonResponse

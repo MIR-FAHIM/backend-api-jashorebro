@@ -214,6 +214,7 @@ class OrderController extends Controller
                         $existingQty = GroupBuyParticipant::where('campaign_id', $campaign->id)
                             ->where('user_id', $user->id)
                             ->whereIn('status', ['reserved', 'confirmed'])
+                            ->whereNotNull('order_id')
                             ->sum('quantity');
 
                         if (($existingQty + $quantity) > $campaign->quantity_limit_per_customer) {
@@ -421,6 +422,7 @@ class OrderController extends Controller
                 foreach ($campaignsToInspect as $camp) {
                     $distinctCount = GroupBuyParticipant::where('campaign_id', $camp->id)
                         ->whereIn('status', ['reserved', 'confirmed'])
+                        ->whereNotNull('order_id')
                         ->distinct('user_id')
                         ->count('user_id');
 

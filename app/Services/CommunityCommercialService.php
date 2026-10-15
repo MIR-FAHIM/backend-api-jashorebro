@@ -20,6 +20,62 @@ class CommunityCommercialService
     public const DEFAULT_ATTRIBUTION_WINDOW_DAYS = 7;
 
     /**
+     * Resolve the configured resale terms shared by seller previews and allocation checks.
+     *
+     * @return array{is_enabled: bool, is_configured: bool, supplier_allocation_price: ?float, min_selling_price: ?float, max_selling_price: ?float, platform_fee_percent: ?float, reason: ?string, message: ?string}
+     */
+    public function resolveShopResaleTerms(Product $product, ?ProductVariant $variant = null): array
+    {
+        $terms = [
+            'is_enabled' => (bool) $product->is_community_shop_enabled,
+            'is_configured' => false,
+            'supplier_allocation_price' => null,
+            'min_selling_price' => null,
+            'max_selling_price' => null,
+            'platform_fee_percent' => null,
+            'reason' => null,
+            'message' => null,
+        ];
+
+        if (! $terms['is_enabled']) {
+            $terms['reason'] = 'disabled';
+            $terms['message'] = "The product '{$product->title}' is not eligible for community shop listings.";
+
+            return $terms;
+        }
+
+        $supplierAllocation = $variant?->supplier_allocation_price
+            ?? $product->supplier_allocation_price
+            ?? $product->cost_price;
+        $minPrice = $variant?->min_selling_price
+            ?? $product->min_selling_price
+            ?? $supplierAllocation;
+        $maxPrice = $variant?->max_selling_price
+            ?? $product->max_selling_price;
+
+        $terms['supplier_allocation_price'] = $supplierAllocation === null ? null : (float) $supplierAllocation;
+        $terms['min_selling_price'] = $minPrice === null ? null : (float) $minPrice;
+        $terms['max_selling_price'] = $maxPrice === null ? null : (float) $maxPrice;
+        $terms['platform_fee_percent'] = (float) ($product->platform_fee_percent ?? 10.00);
+
+        if ($supplierAllocation === null) {
+            $terms['reason'] = 'missing_supplier_allocation';
+            $terms['message'] = "Commercial wholesale pricing is not configured for '{$product->title}'. This product cannot be listed in a community shop.";
+        } elseif ($maxPrice === null) {
+            $terms['reason'] = 'missing_max_price';
+            $terms['message'] = "Maximum retail price ceiling is not configured for '{$product->title}'. This product cannot be listed in a community shop.";
+        } elseif ($supplierAllocation < 0 || $minPrice < 0 || $maxPrice < $minPrice
+            || $terms['platform_fee_percent'] < 0 || $terms['platform_fee_percent'] > 100) {
+            $terms['reason'] = 'invalid_price_bounds';
+            $terms['message'] = "Resale pricing bounds are invalid for '{$product->title}'. An administrator must update its commercial settings.";
+        } else {
+            $terms['is_configured'] = true;
+        }
+
+        return $terms;
+    }
+
+    /**
      * Revalidate and compute the commercial revenue allocation for a community shop item.
      *
      * Rules:
@@ -38,32 +94,17 @@ class CommunityCommercialService
         ?CommunityShop $shop = null,
         ?User $buyer = null
     ): array {
-        $supplierAllocation = $variant?->supplier_allocation_price
-            ?? $product->supplier_allocation_price
-            ?? $product->cost_price;
+        $terms = $this->resolveShopResaleTerms($product, $variant);
 
-        if ($supplierAllocation === null) {
+        if (! $terms['is_configured']) {
             throw ValidationException::withMessages([
-                'selling_price' => ["Commercial wholesale pricing is not configured for '{$product->title}'. This product cannot be listed in a community shop."],
+                'selling_price' => [$terms['message']],
             ]);
         }
-        $supplierAllocation = (float) $supplierAllocation;
-
-        $minPrice = (float) ($variant?->min_selling_price
-            ?? $product->min_selling_price
-            ?? $supplierAllocation);
-
-        $maxPrice = $variant?->max_selling_price
-            ?? $product->max_selling_price;
-
-        if ($maxPrice === null) {
-            throw ValidationException::withMessages([
-                'selling_price' => ["Maximum retail price ceiling is not configured for '{$product->title}'. This product cannot be listed in a community shop."],
-            ]);
-        }
-        $maxPrice = (float) $maxPrice;
-
-        $platformFeePercent = (float) ($product->platform_fee_percent ?? 10.00);
+        $supplierAllocation = (float) $terms['supplier_allocation_price'];
+        $minPrice = (float) $terms['min_selling_price'];
+        $maxPrice = (float) $terms['max_selling_price'];
+        $platformFeePercent = (float) $terms['platform_fee_percent'];
 
         if ($requestedPrice < $minPrice || $requestedPrice > $maxPrice) {
             throw ValidationException::withMessages([

@@ -164,7 +164,7 @@ class CommunityDropController extends Controller
         $user = $request->user();
 
         $campaignIds = GroupBuyParticipant::where('user_id', $user->id)
-            ->whereIn('status', ['reserved', 'confirmed'])
+            ->whereIn('status', ['interested', 'reserved', 'confirmed'])
             ->pluck('campaign_id')
             ->unique()
             ->toArray();
@@ -224,45 +224,75 @@ class CommunityDropController extends Controller
             ]);
         }
 
-        $existing = GroupBuyParticipant::where('campaign_id', $campaign->id)
+        $confirmed = GroupBuyParticipant::where('campaign_id', $campaign->id)
             ->where('user_id', $user->id)
-            ->whereIn('status', ['reserved', 'confirmed'])
+            ->where('status', 'confirmed')
             ->first();
 
-        if ($existing) {
-            if ($existing->status === 'confirmed') {
-                throw ValidationException::withMessages([
-                    'drop' => ['You have an active confirmed order for this drop. To cancel, please manage your order in Orders.'],
-                ]);
-            }
-            $existing->update([
+        if ($confirmed) {
+            throw ValidationException::withMessages([
+                'drop' => ['You have an active confirmed order for this drop. To cancel, please manage your order in Orders.'],
+            ]);
+        }
+
+        $reservedOrder = GroupBuyParticipant::where('campaign_id', $campaign->id)
+            ->where('user_id', $user->id)
+            ->where('status', 'reserved')
+            ->whereNotNull('order_id')
+            ->first();
+
+        if ($reservedOrder) {
+            throw ValidationException::withMessages([
+                'drop' => ['You have an active pending order reservation for this drop. To manage, view Orders or Cart.'],
+            ]);
+        }
+
+        $existingInterest = GroupBuyParticipant::where('campaign_id', $campaign->id)
+            ->where('user_id', $user->id)
+            ->where(function ($q) {
+                $q->where('status', 'interested')
+                  ->orWhere(function ($sub) {
+                      $sub->where('status', 'reserved')->whereNull('order_id');
+                  });
+            })
+            ->first();
+
+        if ($existingInterest) {
+            $existingInterest->update([
                 'status' => 'cancelled',
                 'cancelled_at' => now(),
             ]);
             $isJoined = false;
-            $message = "You have left the drop '{$campaign->title}'.";
+            $message = "You have removed your interest from '{$campaign->title}'.";
         } else {
-            GroupBuyParticipant::create([
-                'campaign_id' => $campaign->id,
-                'user_id' => $user->id,
-                'quantity' => 1,
-                'unit_price' => $campaign->group_price,
-                'status' => 'reserved',
-                'reserved_at' => now(),
-            ]);
+            GroupBuyParticipant::updateOrCreate(
+                [
+                    'campaign_id' => $campaign->id,
+                    'user_id' => $user->id,
+                    'order_id' => null,
+                ],
+                [
+                    'quantity' => 1,
+                    'unit_price' => $campaign->group_price,
+                    'status' => 'interested',
+                    'reserved_at' => now(),
+                    'cancelled_at' => null,
+                ]
+            );
             $isJoined = true;
-            $message = "You're in! You joined the drop '{$campaign->title}'.";
-
-            // Check if target reached
-            $distinct = $campaign->participants()
-                ->whereIn('status', ['reserved', 'confirmed'])
-                ->distinct('user_id')
-                ->count('user_id');
-
-            if ($distinct >= $campaign->target_participants) {
-                $campaign->update(['status' => 'succeeded', 'success_at' => now()]);
-            }
+            $message = "You're in! You expressed interest in '{$campaign->title}'.";
         }
+
+        $this->logService->record(
+            event: 'community.drop_interest_toggled',
+            outcome: 'success',
+            actor: $user,
+            subject: $campaign,
+            metadata: [
+                'campaign_id' => $campaign->id,
+                'is_joined' => $isJoined,
+            ]
+        );
 
         $campaign->refresh();
         $formatted = $this->formatCampaign($campaign, $user->id);
@@ -402,39 +432,42 @@ class CommunityDropController extends Controller
      */
     protected function formatCampaign(GroupBuyCampaign $c, ?int $authUserId = null): array
     {
-        // Auto-expiry lifecycle handling
-        if ($c->status === 'active' && $c->end_at && $c->end_at->isPast()) {
-            $distinct = $c->participants()
-                ->whereIn('status', ['reserved', 'confirmed'])
-                ->distinct('user_id')
-                ->count('user_id');
-            if ($distinct >= $c->target_participants) {
-                $c->update(['status' => 'succeeded', 'success_at' => now()]);
-            } else {
-                $c->update(['status' => 'failed']);
-            }
-        }
-
         $product = $c->product;
-        $distinctParticipants = $c->participants()
+
+        $interestCount = $c->participants()
+            ->where('status', 'interested')
+            ->distinct('user_id')
+            ->count('user_id');
+
+        $qualifyingParticipants = $c->participants()
             ->whereIn('status', ['reserved', 'confirmed'])
+            ->whereNotNull('order_id')
             ->distinct('user_id')
             ->count('user_id');
 
         $target = (int) $c->target_participants;
-        $progressPercent = $target > 0 ? min(100, (int) round(($distinctParticipants / $target) * 100)) : 0;
-        $remainingNeeded = max(0, $target - $distinctParticipants);
+        $progressPercent = $target > 0 ? min(100, (int) round(($qualifyingParticipants / $target) * 100)) : 0;
+        $remainingNeeded = max(0, $target - $qualifyingParticipants);
 
         $retailPrice = (float) ($c->variant?->effective_price ?? $product?->base_price ?? $c->group_price);
         $groupPrice = (float) $c->group_price;
 
-        $isJoined = false;
+        $hasExpressedInterest = false;
+        $hasOrderReservation = false;
+        $hasConfirmedParticipation = false;
+
         if ($authUserId) {
-            $isJoined = $c->participants()
+            $userParticipants = $c->participants()
                 ->where('user_id', $authUserId)
-                ->whereIn('status', ['reserved', 'confirmed'])
-                ->exists();
+                ->whereIn('status', ['interested', 'reserved', 'confirmed'])
+                ->get();
+
+            $hasExpressedInterest = $userParticipants->contains(fn ($p) => $p->status === 'interested');
+            $hasOrderReservation = $userParticipants->contains(fn ($p) => $p->status === 'reserved' && $p->order_id !== null);
+            $hasConfirmedParticipation = $userParticipants->contains(fn ($p) => $p->status === 'confirmed');
         }
+
+        $isJoined = $hasExpressedInterest || $hasOrderReservation || $hasConfirmedParticipation;
 
         $endsIn = null;
         if ($c->end_at) {
@@ -479,13 +512,21 @@ class CommunityDropController extends Controller
             'retail_price' => $retailPrice,
             'groupPrice' => $groupPrice,
             'group_price' => $groupPrice,
-            'currentParticipants' => $distinctParticipants,
-            'current_participants' => $distinctParticipants,
+            'currentParticipants' => $qualifyingParticipants,
+            'current_participants' => $qualifyingParticipants,
+            'qualifying_participants_count' => $qualifyingParticipants,
+            'interest_count' => $interestCount,
+            'interested_count' => $interestCount,
             'target_participants' => $target,
             'progress_percent' => $progressPercent,
             'remaining_needed' => $remainingNeeded,
             'isJoined' => $isJoined,
             'is_joined' => $isJoined,
+            'viewer_state' => [
+                'has_expressed_interest' => $hasExpressedInterest,
+                'has_order_reservation' => $hasOrderReservation,
+                'has_confirmed_participation' => $hasConfirmedParticipation,
+            ],
             'endsIn' => $endsIn,
             'ends_in' => $endsIn,
             'end_at' => $c->end_at?->toIso8601String(),

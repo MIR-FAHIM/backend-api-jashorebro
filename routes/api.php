@@ -375,6 +375,7 @@ Route::prefix('shops')->group(function () {
         Route::post('/add-shop', [CommunityShopController::class, 'store'])->name('shops.create');
         Route::match(['put', 'patch'], '/update-my-shop', [CommunityShopController::class, 'update'])->name('shops.update');
         Route::get('/get-shop-listings', [CommunityShopController::class, 'listings'])->name('shops.listings');
+        Route::get('/get-product-resale-terms/{productId}', [CommunityShopController::class, 'productResaleTerms'])->name('shops.product-resale-terms');
         Route::post('/add-shop-listing', [CommunityShopController::class, 'storeListing'])->name('shops.add-listing');
         Route::match(['put', 'patch'], '/update-shop-listing/{id}', [CommunityShopController::class, 'updateListing'])->name('shops.update-listing');
         Route::delete('/delete-shop-listing/{id}', [CommunityShopController::class, 'destroyListing'])->name('shops.delete-listing');
@@ -419,6 +420,7 @@ Route::prefix('drops')->group(function () {
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('/user/joined', [CommunityDropController::class, 'joinedDrops']);
         Route::post('/{id}/join', [CommunityDropController::class, 'toggleInterest']);
+        Route::post('/{id}/toggle-interest', [CommunityDropController::class, 'toggleInterest']);
     });
     Route::get('/{id}', [CommunityDropController::class, 'show']);
 });
@@ -437,10 +439,15 @@ Route::middleware('auth:sanctum')->prefix('community-drops')->group(function () 
 */
 Route::prefix('feed')->group(function () {
     Route::get('/get-feed', [CommunityFeedController::class, 'index'])->name('feed.public');
+    Route::get('/get-trending-feed', [CommunityFeedController::class, 'trending'])->name('feed.trending');
     Route::middleware('auth:sanctum')->get('/get-following-feed', [CommunityFeedController::class, 'following'])->name('feed.following');
+
+    Route::middleware('auth:sanctum')->post('/add-feedback', [CommunityFeedController::class, 'addFeedback'])->name('feed.add-feedback');
+    Route::post('/add-impressions', [CommunityFeedController::class, 'addImpressions'])->name('feed.add-impressions');
 
     // Compatibility aliases
     Route::get('/', [CommunityFeedController::class, 'index']);
+    Route::get('/trending', [CommunityFeedController::class, 'trending']);
     Route::middleware('auth:sanctum')->get('/following', [CommunityFeedController::class, 'following']);
 });
 

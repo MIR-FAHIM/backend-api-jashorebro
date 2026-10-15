@@ -424,6 +424,7 @@ class ProductController extends Controller
             'stock_quantity' => $product->effective_stock,
             'is_normal_purchase_enabled' => $product->is_normal_purchase_enabled,
             'is_group_buy_enabled' => $product->is_group_buy_enabled,
+            'is_community_shop_enabled' => $product->is_community_shop_enabled,
             'is_featured' => $product->is_featured,
             'is_drop_ready' => $product->is_group_buy_enabled,
             'is_cod_available' => $product->is_cod_available,
