@@ -127,6 +127,10 @@ class AdminOrderController extends Controller
             'reason' => 'nullable|string|max:500',
             'internal_note' => 'nullable|string|max:500',
             'event_key' => 'nullable|string|max:100',
+            'refund_amount' => 'prohibited',
+            'refund_items' => 'prohibited',
+            'refund_quantity' => 'prohibited',
+            'partial_refund' => 'prohibited',
         ]);
 
         $order = $this->orderStatusService->updateByAdmin($id, $validated, $request->user());

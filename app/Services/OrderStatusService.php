@@ -108,7 +108,10 @@ class OrderStatusService
         // Idempotency: If this exact event key was already processed, return existing
         if ($eventKey) {
             $existing = OrderStatusHistory::where('event_key', $eventKey)->first();
-            if ($existing && $existing->order_id === $orderId) {
+            if ($existing && ((int) $existing->order_id !== (int) $orderId || $existing->to_status !== $toStatus)) {
+                throw ValidationException::withMessages(['event_key' => ['This event key already belongs to a different order change.']]);
+            }
+            if ($existing) {
                 return $existing;
             }
         }
@@ -125,6 +128,15 @@ class OrderStatusService
             // Lock the order record to prevent race conditions
             $order = Order::with('items')->where('id', $orderId)->lockForUpdate()->firstOrFail();
             $fromStatus = $order->status;
+            if ($eventKey) {
+                $existing = OrderStatusHistory::where('event_key', $eventKey)->first();
+                if ($existing) {
+                    if ((int) $existing->order_id !== (int) $orderId || $existing->to_status !== $toStatus) {
+                        throw ValidationException::withMessages(['event_key' => ['This event key already belongs to a different order change.']]);
+                    }
+                    return $existing;
+                }
+            }
 
             // If already at target status and no eventKey was provided, check for duplicate submission
             if ($fromStatus === $toStatus) {

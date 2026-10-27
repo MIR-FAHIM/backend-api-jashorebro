@@ -39,7 +39,7 @@ class EarningsController extends Controller
     {
         $user = $request->user();
 
-        $ledgers = EarningsLedger::with(['order:id,order_number,status', 'orderItem:id,product_title,quantity,unit_price'])
+        $ledgers = EarningsLedger::with(['order:id,order_number,status,payment_status', 'orderItem:id,product_title,quantity,unit_price', 'sourceLedger:id,type,amount', 'payoutRequest:id,status,amount,transaction_reference'])
             ->where('user_id', $user->id)
             ->orderBy('id', 'desc')
             ->paginate(20);
@@ -71,6 +71,7 @@ class EarningsController extends Controller
         if (! isset($input['account_number']) && isset($input['account_identifier'])) {
             $input['account_number'] = $input['account_identifier'];
         }
+        $input['idempotency_key'] = $input['idempotency_key'] ?? $request->header('X-Idempotency-Key');
         $request->merge($input);
 
         $validated = $request->validate([
@@ -79,6 +80,7 @@ class EarningsController extends Controller
             'account_number' => 'required|string|max:50',
             'account_name' => 'nullable|string|max:100',
             'notes' => 'nullable|string|max:500',
+            'idempotency_key' => 'nullable|string|max:100',
         ]);
 
         $accountDetails = [
@@ -91,7 +93,8 @@ class EarningsController extends Controller
             user: $user,
             amount: (float) $validated['amount'],
             method: $validated['payout_method'],
-            accountDetails: $accountDetails
+            accountDetails: $accountDetails,
+            idempotencyKey: $validated['idempotency_key'] ?? null
         );
 
         return response()->json([

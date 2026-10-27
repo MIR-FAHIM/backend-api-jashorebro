@@ -115,7 +115,7 @@ class AdminCommunityController extends Controller
      */
     public function payouts(Request $request): JsonResponse
     {
-        $query = PayoutRequest::with(['user:id,name,phone,email,username', 'processedByAdmin:id,name']);
+        $query = PayoutRequest::with(['user:id,name,phone,email,username', 'processedByAdmin:id,name', 'ledgers.sourceLedger']);
 
         if ($status = $request->input('status')) {
             if ($status !== 'all') {
@@ -124,6 +124,21 @@ class AdminCommunityController extends Controller
         }
 
         $payouts = $query->latest('id')->paginate(20);
+        $balances = [];
+        $payouts->getCollection()->each(function ($payout) use (&$balances) {
+            $balance = $balances[$payout->user_id] ??= $this->earningsService->getUserBalances($payout->user_id);
+            $pending = $payout->status === 'pending';
+            $review = $balance['reconciliation_required'];
+            $underfunded = $balance['payout_shortfall'] > 0;
+            $payout->setAttribute('account_balances', $balance);
+            $payout->setAttribute('reconciliation_required', $review);
+            $payout->setAttribute('can_pay', $pending && ! $review && ! $underfunded);
+            $payout->setAttribute('funding_status', ! $pending ? 'processed' : ($review ? 'reconciliation_required' : ($underfunded ? 'underfunded' : 'funded')));
+            $payout->setAttribute('funding_reason', ! $pending ? 'This withdrawal has already been processed.'
+                : ($review ? 'Account history requires administrative reconciliation.'
+                    : ($underfunded ? 'Current eligible earnings no longer cover paid and pending withdrawals. Reject the request to release its reservation.'
+                        : 'Current paid-and-delivered earnings cover all paid and pending withdrawals.')));
+        });
 
         return response()->json([
             'success' => true,
@@ -150,13 +165,6 @@ class AdminCommunityController extends Controller
             'notes' => 'nullable|string|max:500',
         ]);
 
-        if ($payout->status !== 'pending') {
-            return response()->json([
-                'success' => false,
-                'message' => "This payout request is already {$payout->status}.",
-            ], 422);
-        }
-
         $processed = $this->earningsService->processPayout(
             payout: $payout,
             action: $validated['action'],
@@ -177,15 +185,19 @@ class AdminCommunityController extends Controller
      */
     public function settlementReport(Request $request): JsonResponse
     {
+        $request->validate(['from' => 'nullable|date', 'to' => 'nullable|date']);
+        if ($request->filled('from') && $request->filled('to')) {
+            $request->validate(['to' => 'after_or_equal:from']);
+        }
         $itemsQuery = OrderItem::query()
             ->join('orders', 'order_items.order_id', '=', 'orders.id')
-            ->whereIn('orders.status', ['processing', 'shipped', 'delivered']);
+            ->where('orders.status', 'delivered')->where('orders.payment_status', 'paid');
 
         if ($from = $request->input('from')) {
-            $itemsQuery->where('orders.created_at', '>=', $from);
+            $itemsQuery->whereDate('orders.created_at', '>=', $from);
         }
         if ($to = $request->input('to')) {
-            $itemsQuery->where('orders.created_at', '<=', $to);
+            $itemsQuery->whereDate('orders.created_at', '<=', $to);
         }
 
         $totals = $itemsQuery->select(
@@ -194,13 +206,31 @@ class AdminCommunityController extends Controller
             DB::raw('sum(order_items.supplier_allocation_price * order_items.quantity) as total_supplier_allocation'),
             DB::raw('sum(order_items.gross_markup * order_items.quantity) as total_gross_markup'),
             DB::raw('sum(order_items.platform_fee * order_items.quantity) as total_platform_fees'),
-            DB::raw('sum(order_items.seller_earning * order_items.quantity) as total_community_seller_earnings'),
+            DB::raw("sum(case when order_items.earning_model = 'community_shop' then order_items.seller_earning * order_items.quantity else 0 end) as total_community_seller_earnings"),
+            DB::raw("sum(case when order_items.earning_model = 'group_drop' then order_items.seller_earning * order_items.quantity else 0 end) as total_drop_commissions"),
             DB::raw('sum(order_items.commission_amount * order_items.quantity) as total_recommendation_commissions')
         )->first();
 
-        // Payout totals
-        $payoutsTotal = PayoutRequest::where('status', 'paid')->sum('amount');
-        $payoutsPending = PayoutRequest::where('status', 'pending')->sum('amount');
+        $pendingOrders = Order::whereNotIn('status', ['cancelled'])->where('payment_status', '!=', 'refunded')
+            ->where(fn ($query) => $query->where('status', '!=', 'delivered')->orWhere('payment_status', '!=', 'paid'));
+        $paidPayouts = PayoutRequest::where('status', 'paid');
+        $pendingPayouts = PayoutRequest::where('status', 'pending');
+        foreach (['from' => '>=', 'to' => '<='] as $field => $operator) {
+            if ($date = $request->input($field)) {
+                $pendingOrders->whereDate('created_at', $operator, $date);
+                $paidPayouts->whereDate('processed_at', $operator, $date);
+                $pendingPayouts->whereDate('created_at', $operator, $date);
+            }
+        }
+        // Current balances are all-time, independently of the report's order/payout interval.
+        $balanceTotals = ['pending' => 0, 'available' => 0, 'reserved_for_payout' => 0, 'outstanding_recovery' => 0];
+        $reviewAccounts = 0;
+        $userIds = EarningsLedger::select('user_id')->union(PayoutRequest::select('user_id'))->pluck('user_id')->unique();
+        foreach ($userIds as $userId) {
+            $balance = $this->earningsService->getUserBalances((int) $userId);
+            foreach (array_keys($balanceTotals) as $key) $balanceTotals[$key] += $balance[$key];
+            if ($balance['reconciliation_required']) $reviewAccounts++;
+        }
 
         return response()->json([
             'success' => true,
@@ -211,9 +241,19 @@ class AdminCommunityController extends Controller
                 'total_gross_markup' => round((float) ($totals->total_gross_markup ?? 0), 2),
                 'total_platform_fees' => round((float) ($totals->total_platform_fees ?? 0), 2),
                 'total_community_seller_earnings' => round((float) ($totals->total_community_seller_earnings ?? 0), 2),
+                'total_drop_commissions' => round((float) ($totals->total_drop_commissions ?? 0), 2),
                 'total_recommendation_commissions' => round((float) ($totals->total_recommendation_commissions ?? 0), 2),
-                'payouts_completed' => round((float) $payoutsTotal, 2),
-                'payouts_pending_review' => round((float) $payoutsPending, 2),
+                'payouts_completed' => round((float) $paidPayouts->sum('amount'), 2),
+                'payouts_pending_review' => round((float) $pendingPayouts->sum('amount'), 2),
+                'pending_orders' => $pendingOrders->count(),
+                'total_pending_balances' => round($balanceTotals['pending'], 2),
+                'total_available_balances' => round($balanceTotals['available'], 2),
+                'total_reserved_balances' => round($balanceTotals['reserved_for_payout'], 2),
+                'total_recovery_balances' => round($balanceTotals['outstanding_recovery'], 2),
+                'accounts_requiring_reconciliation' => $reviewAccounts,
+                'eligibility_policy' => EarningsService::ELIGIBILITY_POLICY,
+                'balance_scope' => 'current_all_time',
+                'report_scope' => 'paid_delivered_orders_by_order_date_payouts_by_processed_date_pending_requests_by_request_date',
             ],
         ]);
     }

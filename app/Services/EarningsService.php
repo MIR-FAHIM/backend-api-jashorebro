@@ -152,7 +152,7 @@ class EarningsService
             if ($idempotencyKey) {
                 $existing = PayoutRequest::where('user_id', $lockedUser->id)->where('idempotency_key', $idempotencyKey)->first();
                 if ($existing) {
-                    if ($this->minor($existing->amount) !== $this->minor($amount) || $existing->payout_method !== $method || $existing->account_details !== $accountDetails) {
+                    if ($this->minor($existing->amount) !== $this->minor($amount) || $existing->payout_method !== $method || ($existing->account_details ?? []) != $accountDetails) {
                         throw ValidationException::withMessages(['idempotency_key' => ['This request key already belongs to a different withdrawal.']]);
                     }
                     return $existing;

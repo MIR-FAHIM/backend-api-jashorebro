@@ -27,6 +27,11 @@ class EarningsLedger extends Model
     protected function casts(): array
     {
         return [
+            'user_id' => 'integer',
+            'order_id' => 'integer',
+            'order_item_id' => 'integer',
+            'payout_request_id' => 'integer',
+            'source_ledger_id' => 'integer',
             'amount' => 'float',
             'occurred_at' => 'datetime',
         ];
