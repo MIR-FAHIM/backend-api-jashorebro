@@ -13,6 +13,7 @@ class PayoutRequest extends Model
 
     protected $fillable = [
         'user_id',
+        'idempotency_key',
         'amount',
         'status', // pending, approved, paid, rejected, cancelled
         'payout_method', // bkash, nagad, bank_transfer, cash_hub

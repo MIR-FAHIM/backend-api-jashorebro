@@ -9,6 +9,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\User;
 use App\Services\CommunityCommercialService;
 use App\Services\EarningsService;
 use App\Services\LogService;
@@ -145,6 +146,7 @@ class OrderController extends Controller
 
         try {
             $validated = $request->validate([
+                'idempotency_key' => 'required|uuid',
                 'items' => 'required|array|min:1',
                 'items.*.product_id' => 'required|exists:products,id',
                 'items.*.variant_id' => 'nullable|exists:product_variants,id',
@@ -167,7 +169,27 @@ class OrderController extends Controller
                 'notes' => 'nullable|string|max:500',
             ]);
 
-            $order = DB::transaction(function () use ($validated, $user) {
+            $requestKey = $this->checkoutRequestKey($user->id, $validated['idempotency_key']);
+            $requestBody = $validated;
+            unset($requestBody['idempotency_key']);
+            $requestHash = hash('sha256', json_encode($requestBody, JSON_THROW_ON_ERROR));
+
+            $order = DB::transaction(function () use ($validated, $user, $requestKey, $requestHash) {
+                // Serialize checkout requests for this buyer. The existing unique
+                // orders.idempotency_key index is the durable second guard.
+                User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+                $existing = Order::where('user_id', $user->id)
+                    ->where('idempotency_key', $requestKey)->first();
+                if ($existing) {
+                    if (! hash_equals((string) $existing->checkout_request_hash, $requestHash)) {
+                        throw ValidationException::withMessages([
+                            'idempotency_key' => ['This checkout request was already used with different details. Check your orders before starting another purchase.'],
+                        ]);
+                    }
+
+                    return $existing;
+                }
+
                 $subtotal = 0.00;
                 $maxShippingCharge = 0.00;
                 $allFreeShipping = true;
@@ -321,6 +343,8 @@ class OrderController extends Controller
 
                 $order = Order::create([
                     'order_number' => $orderNumber,
+                    'idempotency_key' => $requestKey,
+                    'checkout_request_hash' => $requestHash,
                     'user_id' => $user->id,
                     'seller_id' => $sellerId ?? 1,
                     'status' => $initialStatus,
@@ -450,7 +474,7 @@ class OrderController extends Controller
                 }
 
                 return $order;
-            });
+            }, 3);
         } catch (\Throwable $e) {
             // Record failure outside of the rolled-back transaction
             app(LogService::class)->record(
@@ -478,6 +502,28 @@ class OrderController extends Controller
                 'statusHistories' => fn ($q) => $q->forCustomer(),
             ]),
         ], 201);
+    }
+
+    /**
+     * Recover an accepted checkout after a lost response without creating an
+     * order or requiring stock to remain available for a fresh quote.
+     */
+    public function checkoutAttempt(Request $request, string $key): JsonResponse
+    {
+        validator(['key' => $key], ['key' => 'required|uuid'])->validate();
+        $order = Order::where('user_id', $request->user()->id)
+            ->where('idempotency_key', $this->checkoutRequestKey($request->user()->id, $key))
+            ->first();
+
+        return response()->json([
+            'success' => true,
+            'data' => $order?->load(['items', 'seller:id,store_name']),
+        ]);
+    }
+
+    private function checkoutRequestKey(int $userId, string $key): string
+    {
+        return 'web_'.hash('sha256', $userId.':'.$key);
     }
 
     /**

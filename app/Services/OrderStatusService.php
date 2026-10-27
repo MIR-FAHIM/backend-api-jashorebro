@@ -6,6 +6,7 @@ use App\Models\GroupBuyCampaign;
 use App\Models\GroupBuyParticipant;
 use App\Models\Order;
 use App\Models\OrderStatusHistory;
+use App\Models\OrderPaymentHistory;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\User;
@@ -221,15 +222,48 @@ class OrderStatusService
                 );
             }
 
-            // Community commerce financial ledger hook
-            if ($toStatus === 'delivered') {
-                app(\App\Services\EarningsService::class)->releaseEarningsForOrder($order);
-            } elseif ($isCancelled) {
-                app(\App\Services\EarningsService::class)->reverseEarningsForOrder($order, $history->reason ?? 'Order cancelled');
-            }
+            app(EarningsService::class)->syncEarningsForOrder($order, $history->reason);
 
             return $history;
-        });
+        }, 3);
+    }
+
+    /** Fulfillment and payment changes either commit together, or both roll back. */
+    public function updateByAdmin(Order|int $orderOrId, array $updates, User $admin): Order
+    {
+        if (! $admin->isAdmin()) {
+            throw ValidationException::withMessages(['status' => ['Only authorized administrative staff can update an order.']]);
+        }
+        $orderId = $orderOrId instanceof Order ? $orderOrId->id : $orderOrId;
+        return DB::transaction(function () use ($orderId, $updates, $admin) {
+            $order = Order::whereKey($orderId)->lockForUpdate()->firstOrFail();
+            if (isset($updates['payment_status']) && $updates['payment_status'] !== $order->payment_status) {
+                $from = $order->payment_status;
+                $to = $updates['payment_status'];
+                if (! (($from === 'unpaid' && $to === 'paid') || ($from === 'paid' && $to === 'refunded'))) {
+                    throw ValidationException::withMessages(['payment_status' => ['Payment may move from unpaid to paid, then to fully refunded. Paid cannot revert to unpaid; a full refund is terminal. Partial refunds are not supported.']]);
+                }
+                if ($to === 'refunded' && trim((string) ($updates['reason'] ?? '')) === '') {
+                    throw ValidationException::withMessages(['reason' => ['Record the reason for the completed full refund. This control does not send money.']]);
+                }
+                $order->update(['payment_status' => $to]);
+                OrderPaymentHistory::create([
+                    'order_id' => $order->id, 'from_status' => $from, 'to_status' => $to,
+                    'changed_by_user_id' => $admin->id, 'reason' => $updates['reason'] ?? null,
+                    'internal_note' => $updates['internal_note'] ?? null,
+                    'event_key' => "payment:order:{$order->id}:{$from}:{$to}", 'occurred_at' => now(),
+                ]);
+                app(LogService::class)->record(event: 'order.payment_status_changed', outcome: 'success', actor: $admin, subject: $order,
+                    metadata: ['order_id' => $order->id, 'from_status' => $from, 'to_status' => $to, 'reason' => $updates['reason'] ?? null]);
+            }
+            if (isset($updates['status'])) {
+                $this->transition($order, $updates['status'], 'admin', $admin, $updates['reason'] ?? null,
+                    $updates['internal_note'] ?? null, $updates['event_key'] ?? null);
+            }
+            $order->refresh();
+            app(EarningsService::class)->syncEarningsForOrder($order, $updates['reason'] ?? null);
+            return $order;
+        }, 3);
     }
 
     /**

@@ -79,6 +79,11 @@ class AdminOrderController extends Controller
             'items.variant',
             'groupParticipants.campaign',
             'statusHistories.changedByUser:id,name,username',
+            'paymentHistories.changedByUser:id,name,username',
+            'items.beneficiary:id,name,username',
+            'items.recommender:id,name,username',
+            'items.earningsLedgers.sourceLedger',
+            'items.earningsLedgers.payoutRequest',
         ])->findOrFail($id);
 
         return response()->json([
@@ -124,26 +129,7 @@ class AdminOrderController extends Controller
             'event_key' => 'nullable|string|max:100',
         ]);
 
-        $order = Order::findOrFail($id);
-
-        // 1. Process fulfillment status transition through OrderStatusService
-        if (isset($validated['status'])) {
-            $this->orderStatusService->transition(
-                orderOrId: $order,
-                toStatus: $validated['status'],
-                actorType: 'admin',
-                actor: $request->user(),
-                reason: $validated['reason'] ?? null,
-                internalNote: $validated['internal_note'] ?? null,
-                eventKey: $validated['event_key'] ?? null
-            );
-        }
-
-        // 2. Process separate payment status update
-        if (isset($validated['payment_status'])) {
-            $order->payment_status = $validated['payment_status'];
-            $order->save();
-        }
+        $order = $this->orderStatusService->updateByAdmin($id, $validated, $request->user());
 
         return response()->json([
             'success' => true,
@@ -152,6 +138,11 @@ class AdminOrderController extends Controller
                 'items',
                 'seller:id,store_name',
                 'statusHistories.changedByUser:id,name,username',
+                'paymentHistories.changedByUser:id,name,username',
+                'items.beneficiary:id,name,username',
+                'items.recommender:id,name,username',
+                'items.earningsLedgers.sourceLedger',
+                'items.earningsLedgers.payoutRequest',
             ]),
         ]);
     }

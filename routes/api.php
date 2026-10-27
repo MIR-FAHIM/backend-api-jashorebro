@@ -276,6 +276,7 @@ Route::prefix('checkout')->group(function () {
 });
 
 Route::prefix('orders')->middleware('auth:sanctum')->group(function () {
+    Route::get('/get-checkout-attempt/{key}', [OrderController::class, 'checkoutAttempt']);
     Route::get('/get-orders', [OrderController::class, 'index'])->name('orders.list');
     Route::post('/add-order', [OrderController::class, 'store'])->name('orders.create');
     Route::get('/get-order/{id}', [OrderController::class, 'show'])->name('orders.show');

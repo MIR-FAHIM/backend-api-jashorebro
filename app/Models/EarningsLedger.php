@@ -15,6 +15,8 @@ class EarningsLedger extends Model
         'order_id',
         'order_item_id',
         'payout_request_id',
+        'source_ledger_id',
+        'event_key',
         'type', // credit_pending, release_available, reversal, payout_reserved, payout_paid, payout_rejected
         'amount',
         'status', // pending, available, reversed, reserved, paid
@@ -48,5 +50,10 @@ class EarningsLedger extends Model
     public function payoutRequest(): BelongsTo
     {
         return $this->belongsTo(PayoutRequest::class);
+    }
+
+    public function sourceLedger(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'source_ledger_id');
     }
 }

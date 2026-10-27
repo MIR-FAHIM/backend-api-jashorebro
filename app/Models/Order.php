@@ -12,9 +12,12 @@ class Order extends Model
 {
     use HasFactory;
 
+    protected $hidden = ['idempotency_key', 'checkout_request_hash'];
+
     protected $fillable = [
         'order_number',
         'idempotency_key',
+        'checkout_request_hash',
         'user_id',
         'created_by_admin_id',
         'seller_id',
@@ -82,6 +85,11 @@ class Order extends Model
     public function statusHistories(): HasMany
     {
         return $this->hasMany(OrderStatusHistory::class)->orderBy('occurred_at', 'asc')->orderBy('id', 'asc');
+    }
+
+    public function paymentHistories(): HasMany
+    {
+        return $this->hasMany(OrderPaymentHistory::class)->orderBy('id');
     }
 
     public function latestStatusHistory(): HasOne
