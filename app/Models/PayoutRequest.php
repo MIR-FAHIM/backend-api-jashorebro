@@ -14,6 +14,7 @@ class PayoutRequest extends Model
     protected $fillable = [
         'user_id',
         'idempotency_key',
+        'funding_snapshot',
         'amount',
         'status', // pending, approved, paid, rejected, cancelled
         'payout_method', // bkash, nagad, bank_transfer, cash_hub
@@ -24,11 +25,14 @@ class PayoutRequest extends Model
         'processed_at',
     ];
 
+    protected $hidden = ['idempotency_key'];
+
     protected function casts(): array
     {
         return [
             'amount' => 'float',
             'account_details' => 'array',
+            'funding_snapshot' => 'array',
             'processed_at' => 'datetime',
         ];
     }

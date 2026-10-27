@@ -168,6 +168,7 @@ class EarningsService
             $payout = PayoutRequest::create([
                 'user_id' => $lockedUser->id, 'idempotency_key' => $idempotencyKey, 'amount' => $amount,
                 'status' => 'pending', 'payout_method' => $method, 'account_details' => $accountDetails,
+                'funding_snapshot' => ['requested' => $this->fundingBasis($lockedUser->id, $balances)],
             ]);
             EarningsLedger::create([
                 'user_id' => $lockedUser->id, 'payout_request_id' => $payout->id,
@@ -205,7 +206,8 @@ class EarningsService
                 throw ValidationException::withMessages(['action' => ['This withdrawal is underfunded after an earnings reversal or needs reconciliation. Reject it to release its reservation; do not mark it paid.']]);
             }
             $locked->update(['status' => $action, 'processed_by_admin_id' => $admin->id,
-                'transaction_reference' => $action === 'paid' ? $txRef : null, 'admin_notes' => $notes, 'processed_at' => now()]);
+                'transaction_reference' => $action === 'paid' ? $txRef : null, 'admin_notes' => $notes, 'processed_at' => now(),
+                'funding_snapshot' => array_merge($locked->funding_snapshot ?? [], ['processed' => $this->fundingBasis($user->id, $balances)])]);
             $reservation = EarningsLedger::where('payout_request_id', $locked->id)->whereIn('type', ['payout_reserved', 'payout_paid'])->orderBy('id')->first();
             EarningsLedger::create([
                 'user_id' => $user->id, 'payout_request_id' => $locked->id, 'source_ledger_id' => $reservation?->id,
@@ -229,6 +231,20 @@ class EarningsService
     protected function isEligible(Order $order): bool
     {
         return $order->status === 'delivered' && $order->payment_status === 'paid';
+    }
+
+    /** Account funding basis for reconciliation; this is not per-line payout allocation. */
+    protected function fundingBasis(int $userId, array $balances): array
+    {
+        $sources = EarningsLedger::with('order:id,status,payment_status')->where('user_id', $userId)
+            ->where('type', 'credit_pending')->orderBy('id')->get()->filter(function ($credit) {
+                return $credit->order && $this->isEligible($credit->order) && ! $this->isCreditReversed($credit)
+                    && ($credit->status === 'available' || $this->hasEvent($credit, 'release_available'));
+            })->map(fn ($credit) => ['ledger_id' => $credit->id, 'order_id' => $credit->order_id,
+                'order_item_id' => $credit->order_item_id, 'eligible_earning' => $credit->amount])->values()->all();
+        return ['recorded_at' => now()->toIso8601String(), 'policy' => self::ELIGIBILITY_POLICY,
+            'basis' => 'beneficiary_account_balance_not_per_line_allocation',
+            'balances' => $balances, 'eligible_credit_sources' => $sources];
     }
 
     protected function lockBeneficiaries(Order $order): void
