@@ -485,12 +485,15 @@ class FriendController extends Controller
 
         if ($currentUser) {
             $relationshipStatus = $currentUser->relationshipStatusWith($user);
+            if ($relationshipStatus === 'blocked') {
+                return response()->json(['success' => false, 'message' => 'This user profile is not accessible.'], 403);
+            }
             $mutualFriendsCount = $currentUser->mutualFriendsCountWith($user);
             $friendship = $currentUser->friendshipWith($user);
             $friendshipId = $friendship?->id;
         }
 
-        $picksCount = UserPick::where('user_id', $user->id)->where('is_public', true)->count();
+        $picksCount = UserPick::where('user_id', $user->id)->publiclyVisible()->count();
         $dropsJoinedCount = GroupBuyParticipant::where('user_id', $user->id)
             ->whereIn('status', ['reserved', 'confirmed'])
             ->distinct('campaign_id')
@@ -510,7 +513,7 @@ class FriendController extends Controller
         // User's public picks
         $publicPicks = UserPick::with(['product.primaryImage', 'product.activeVariants'])
             ->where('user_id', $user->id)
-            ->where('is_public', true)
+            ->publiclyVisible()
             ->orderBy('is_featured', 'desc')
             ->orderBy('display_order', 'asc')
             ->limit(12)

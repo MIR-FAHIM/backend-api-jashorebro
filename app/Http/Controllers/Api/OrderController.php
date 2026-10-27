@@ -42,15 +42,17 @@ class OrderController extends Controller
             'items.*.campaign_id' => 'nullable|exists:group_buy_campaigns,id',
             'items.*.shop_listing_id' => 'nullable|exists:shop_listings,id',
             'items.*.community_shop_id' => 'nullable|exists:community_shops,id',
-            'items.*.recommendation_code' => 'nullable|string',
-            'items.*.recommender_id' => 'nullable|exists:users,id',
+            'items.*.recommendation_code' => 'nullable|string|max:255',
+            'items.*.recommender_id' => 'nullable|integer',
+            'items.*.attribution_token' => 'nullable|string|max:255',
+            'items.*.attribution_visitor_token' => 'nullable|string|max:255',
         ]);
 
         $itemsQuote = [];
         $subtotal = 0.00;
         $maxShippingCharge = 0.00;
         $allFreeShipping = true;
-        $buyer = $request->user();
+        $buyer = $request->user('sanctum') ?? $request->user();
 
         foreach ($request->input('items') as $line) {
             $product = Product::with('activeVariants')->findOrFail($line['product_id']);
@@ -112,6 +114,9 @@ class OrderController extends Controller
                 'line_total' => $lineTotal,
                 'seller_earning_preview' => $attrib['seller_earning'],
                 'commission_preview' => $attrib['commission_amount'],
+                'referral_status' => $attrib['referral_status'],
+                'referral_reason' => $attrib['referral_reason'],
+                'referral' => $attrib['referral'],
             ];
         }
 
@@ -148,8 +153,10 @@ class OrderController extends Controller
                 'items.*.campaign_id' => 'nullable|exists:group_buy_campaigns,id',
                 'items.*.shop_listing_id' => 'nullable|exists:shop_listings,id',
                 'items.*.community_shop_id' => 'nullable|exists:community_shops,id',
-                'items.*.recommendation_code' => 'nullable|string',
-                'items.*.recommender_id' => 'nullable|exists:users,id',
+                'items.*.recommendation_code' => 'nullable|string|max:255',
+                'items.*.recommender_id' => 'nullable|integer',
+                'items.*.attribution_token' => 'nullable|string|max:255',
+                'items.*.attribution_visitor_token' => 'nullable|string|max:255',
                 'payment_method' => 'required|in:cod,bkash,nagad',
                 'address_id' => 'nullable|integer',
                 'shipping_name' => 'required_without:address_id|nullable|string|max:100',

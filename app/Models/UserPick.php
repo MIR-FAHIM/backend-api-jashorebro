@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -37,5 +38,12 @@ class UserPick extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
+    }
+
+    public function scopePubliclyVisible(Builder $query): Builder
+    {
+        return $query->where('is_public', true)
+            ->whereHas('product', fn (Builder $product) => $product->publiclyAvailable())
+            ->whereHas('user', fn (Builder $user) => $user->where('status', 'active'));
     }
 }

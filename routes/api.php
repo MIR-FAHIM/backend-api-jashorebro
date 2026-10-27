@@ -23,6 +23,7 @@ use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductCommentController;
 use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\ReferralAttributionController;
 use App\Http\Controllers\Api\SellerController;
 use App\Http\Controllers\Api\UserFollowController;
 use App\Http\Controllers\Api\UserPickController;
@@ -337,6 +338,8 @@ Route::prefix('notifications')->middleware('auth:sanctum')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('picks')->group(function () {
+    Route::post('/resolve-attribution', [ReferralAttributionController::class, 'resolve'])->middleware('throttle:60,1')->name('picks.resolve-attribution');
+    Route::post('/lock-attribution', [ReferralAttributionController::class, 'lock'])->middleware('throttle:60,1')->name('picks.lock-attribution');
     // Public lookups
     Route::get('/get-user-picks/{username}', [UserPickController::class, 'userPicks'])->name('picks.user-picks');
     Route::get('/lookup-pick-code/{code}', [UserPickController::class, 'lookupCode'])->name('picks.lookup-code');

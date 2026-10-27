@@ -8,16 +8,16 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\ShopListing;
 use App\Models\User;
-use App\Models\UserPick;
-use Carbon\Carbon;
 use Illuminate\Validation\ValidationException;
 
 class CommunityCommercialService
 {
+    public function __construct(protected ReferralAttributionService $referralAttributionService) {}
+
     /**
      * Default attribution window for product recommendations in days.
      */
-    public const DEFAULT_ATTRIBUTION_WINDOW_DAYS = 7;
+    public const DEFAULT_ATTRIBUTION_WINDOW_DAYS = ReferralAttributionService::WINDOW_DAYS;
 
     /**
      * Resolve the configured resale terms shared by seller previews and allocation checks.
@@ -195,7 +195,9 @@ class CommunityCommercialService
         ?User $buyer = null
     ): array {
         $groupPrice = (float) $campaign->group_price;
-        $organizerCommission = (float) ($campaign->organizer_commission_per_unit ?? 0.00);
+        $organizerCommission = $campaign->organizer_user_id
+            ? (float) ($campaign->organizer_commission_per_unit ?? 0.00)
+            : 0.00;
         $supplierAllocation = (float) ($campaign->supplier_allocation_price > 0
             ? $campaign->supplier_allocation_price
             : max(0.00, $groupPrice - $organizerCommission));
@@ -239,10 +241,15 @@ class CommunityCommercialService
         ?ProductVariant $variant,
         ?User $buyer = null
     ): array {
+        $this->validateLineSourceIdentity($lineInput, $product, $variant);
+        $hasReferral = ! empty($lineInput['attribution_token']) || ! empty($lineInput['attribution_visitor_token'])
+            || ! empty($lineInput['recommendation_code']) || ! empty($lineInput['recommender_id']);
+
         // 1. Group Drop Campaign
         if (! empty($lineInput['campaign_id'])) {
             $campaign = GroupBuyCampaign::find($lineInput['campaign_id']);
-            if ($campaign && $campaign->organizer_user_id) {
+            if ($campaign && $campaign->status === 'active' && ! $campaign->isExpired()
+                && (! $campaign->start_at || ! $campaign->start_at->isFuture())) {
                 $allocation = $this->calculateGroupDropAllocation($campaign, $product, $variant, $buyer);
                 return array_merge($allocation, [
                     'community_shop_id' => $campaign->originating_shop_id,
@@ -250,6 +257,9 @@ class CommunityCommercialService
                     'recommender_id' => null,
                     'recommendation_code' => null,
                     'beneficiary_user_id' => $campaign->organizer_user_id,
+                    'referral_status' => $hasReferral ? 'overridden' : 'none',
+                    'referral_reason' => $hasReferral ? 'campaign_precedence' : null,
+                    'referral' => null,
                 ]);
             }
         }
@@ -273,50 +283,52 @@ class CommunityCommercialService
                     'recommender_id' => null,
                     'recommendation_code' => null,
                     'beneficiary_user_id' => $shop->user_id,
+                    'referral_status' => $hasReferral ? 'overridden' : 'none',
+                    'referral_reason' => $hasReferral ? 'shop_precedence' : null,
+                    'referral' => null,
                 ]);
             }
         }
 
-        // 3. Recommendation link or referral code
-        $recCode = $lineInput['recommendation_code'] ?? null;
-        $recommenderId = $lineInput['recommender_id'] ?? null;
+        // 3. Only a locked server receipt can authorize a recommendation commission.
+        $referralResult = $hasReferral
+            ? $this->referralAttributionService->validateLockedLine($lineInput, $product, $buyer)
+            : null;
+        $referral = $referralResult ? $this->referralAttributionService->publicData($referralResult) : null;
+        if ($referral !== null) {
+            unset($referral['attribution_token']);
+        }
 
-        if ($recCode || $recommenderId) {
-            $pick = null;
-            if ($recCode) {
-                $pick = UserPick::with('user')
-                    ->where('recommendation_code', $recCode)
-                    ->where('product_id', $product->id)
-                    ->first();
-            } elseif ($recommenderId) {
-                $pick = UserPick::with('user')
-                    ->where('user_id', $recommenderId)
-                    ->where('product_id', $product->id)
-                    ->first();
-            }
+        if (($referralResult['status'] ?? null) === 'verified') {
+            $receipt = $referralResult['receipt'];
+            $allocation = $this->calculateRecommendationAllocation(
+                product: $product,
+                variant: $variant,
+                recommender: $receipt->recommender,
+                buyer: $buyer
+            );
+            $allocation['terms_snapshot']['referral_attribution'] = [
+                'id' => $receipt->id,
+                'user_pick_id' => $receipt->user_pick_id,
+                'product_id' => $receipt->product_id,
+                'recommender_id' => $receipt->recommender_id,
+                'buyer_user_id' => $receipt->buyer_user_id,
+                'visited_at' => $receipt->visited_at->toIso8601String(),
+                'expires_at' => $receipt->expires_at->toIso8601String(),
+                'locked_at' => $receipt->locked_at->toIso8601String(),
+                'policy_version' => $receipt->policy_version,
+            ];
 
-            if ($pick && $pick->user && $product->is_recommendation_enabled) {
-                // Verify attribution window (created within configured days, default 7)
-                $windowDays = self::DEFAULT_ATTRIBUTION_WINDOW_DAYS;
-                $isWithinWindow = $pick->created_at->diffInDays(now()) <= $windowDays;
-
-                if ($isWithinWindow) {
-                    $allocation = $this->calculateRecommendationAllocation(
-                        product: $product,
-                        variant: $variant,
-                        recommender: $pick->user,
-                        buyer: $buyer
-                    );
-
-                    return array_merge($allocation, [
-                        'community_shop_id' => null,
-                        'shop_listing_id' => null,
-                        'recommender_id' => $pick->user_id,
-                        'recommendation_code' => $pick->recommendation_code,
-                        'beneficiary_user_id' => $pick->user_id,
-                    ]);
-                }
-            }
+            return array_merge($allocation, [
+                'community_shop_id' => null,
+                'shop_listing_id' => null,
+                'recommender_id' => $receipt->recommender_id,
+                'recommendation_code' => $receipt->pick->recommendation_code,
+                'beneficiary_user_id' => $receipt->recommender_id,
+                'referral_status' => 'verified',
+                'referral_reason' => null,
+                'referral' => $referral,
+            ]);
         }
 
         // 4. Default: Direct catalog purchase (no community earnings)
@@ -339,11 +351,48 @@ class CommunityCommercialService
             'recommender_id' => null,
             'recommendation_code' => null,
             'beneficiary_user_id' => null,
+            'referral_status' => $referralResult['status'] ?? 'none',
+            'referral_reason' => $referralResult['reason'] ?? null,
+            'referral' => $referral,
             'terms_snapshot' => [
                 'policy_version' => '1.0',
                 'channel' => 'direct_catalog',
                 'calculated_at' => now()->toIso8601String(),
             ],
         ];
+    }
+
+    /** Reject cross-product sources before using their price or beneficiary. */
+    private function validateLineSourceIdentity(array $line, Product $product, ?ProductVariant $variant): void
+    {
+        if ($variant && (int) $variant->product_id !== (int) $product->id) {
+            throw ValidationException::withMessages(['items' => ['The selected variant does not belong to this product.']]);
+        }
+
+        $isGroupBuy = ($line['purchase_mode'] ?? null) === 'group_buy';
+        $hasCampaign = ! empty($line['campaign_id']);
+        if ($isGroupBuy !== $hasCampaign) {
+            throw ValidationException::withMessages(['items' => ['A drop campaign must be purchased using group buy mode.']]);
+        }
+
+        if (! empty($line['campaign_id'])) {
+            $campaign = GroupBuyCampaign::find($line['campaign_id']);
+            if (! $campaign || (int) $campaign->product_id !== (int) $product->id
+                || ($campaign->product_variant_id && (int) $campaign->product_variant_id !== (int) ($variant?->id))) {
+                throw ValidationException::withMessages(['items' => ['The selected drop campaign does not match this product and variant.']]);
+            }
+            if ($campaign->status !== 'active' || $campaign->isExpired()
+                || ($campaign->start_at && $campaign->start_at->isFuture())) {
+                throw ValidationException::withMessages(['items' => ['The selected drop campaign is not active.']]);
+            }
+        }
+
+        if (! empty($line['shop_listing_id'])) {
+            $listing = ShopListing::find($line['shop_listing_id']);
+            if (! $listing || (int) $listing->product_id !== (int) $product->id
+                || (! empty($line['community_shop_id']) && (int) $listing->community_shop_id !== (int) $line['community_shop_id'])) {
+                throw ValidationException::withMessages(['items' => ['The selected shop listing does not match this product and shop.']]);
+            }
+        }
     }
 }

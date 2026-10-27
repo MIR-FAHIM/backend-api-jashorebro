@@ -272,7 +272,7 @@ class UserPickController extends Controller
 
         $query = UserPick::with(['product.primaryImage'])
             ->where('user_id', $targetUser->id)
-            ->where('is_public', true)
+            ->publiclyVisible()
             ->orderBy('is_featured', 'desc')
             ->orderBy('display_order', 'asc');
 
@@ -406,11 +406,17 @@ class UserPickController extends Controller
     /**
      * Lookup pick by recommendation code.
      */
-    public function lookupCode(string $code): JsonResponse
+    public function lookupCode(Request $request, string $code): JsonResponse
     {
         $pick = UserPick::with(['product.primaryImage', 'product.activeVariants', 'user:id,name,username'])
             ->where('recommendation_code', $code)
+            ->publiclyVisible()
             ->firstOrFail();
+
+        $currentUser = $request->user('sanctum');
+        if ($currentUser && $pick->user && $currentUser->relationshipStatusWith($pick->user) === 'blocked') {
+            return response()->json(['success' => false, 'message' => 'This Pick is not accessible.'], 403);
+        }
 
         return response()->json([
             'success' => true,
