@@ -171,7 +171,7 @@ class CommunityDropController extends Controller
         $user = $request->user();
 
         $campaignIds = GroupBuyParticipant::where('user_id', $user->id)
-            ->whereIn('status', ['interested', 'reserved', 'confirmed'])
+            ->currentParticipation()
             ->pluck('campaign_id')
             ->unique()
             ->toArray();
@@ -229,13 +229,13 @@ class CommunityDropController extends Controller
             ->lockForUpdate()->firstOrFail();
 
         $availability = app(GroupBuyLifecycleService::class)->availability($campaign);
-        if (! $availability['can_express_interest']) {
+        if (! $availability['can_express_interest'] && ! ($request->has('is_interested') && ! $request->boolean('is_interested'))) {
             throw ValidationException::withMessages([
                 'drop' => [$availability['unavailability_reason']],
             ]);
         }
 
-        $confirmed = GroupBuyParticipant::where('campaign_id', $campaign->id)
+        $confirmed = $campaign->activeParticipants()
             ->where('user_id', $user->id)
             ->where('status', 'confirmed')
             ->first();
@@ -246,7 +246,7 @@ class CommunityDropController extends Controller
             ]);
         }
 
-        $reservedOrder = GroupBuyParticipant::where('campaign_id', $campaign->id)
+        $reservedOrder = $campaign->activeParticipants()
             ->where('user_id', $user->id)
             ->where('status', 'reserved')
             ->whereNotNull('order_id')
@@ -344,6 +344,9 @@ class CommunityDropController extends Controller
         ]);
 
         $product = Product::findOrFail($validated['product_id']);
+        if (! app(GroupBuyLifecycleService::class)->productIsPublic($product)) {
+            throw ValidationException::withMessages(['product_id' => ['Choose an active public catalogue product.']]);
+        }
         if (! $product->is_group_drop_enabled) {
             throw ValidationException::withMessages([
                 'product_id' => ["The product '{$product->title}' does not permit community group drops."],
@@ -353,6 +356,9 @@ class CommunityDropController extends Controller
         $variant = ! empty($validated['product_variant_id'])
             ? ProductVariant::findOrFail($validated['product_variant_id'])
             : null;
+        if ($variant && ((int) $variant->product_id !== (int) $product->id || ! $variant->is_active)) {
+            throw ValidationException::withMessages(['product_variant_id' => ['Choose an active variant belonging to this product.']]);
+        }
 
         $catalogPrice = $variant ? (float) $variant->effective_price : (float) $product->base_price;
         $groupPrice = (float) $validated['group_price'];
@@ -363,7 +369,7 @@ class CommunityDropController extends Controller
             ]);
         }
 
-        $supplierCost = $product->supplier_allocation_price ?? $product->cost_price;
+        $supplierCost = $variant?->supplier_allocation_price ?? $product->supplier_allocation_price ?? $product->cost_price;
         if ($supplierCost === null) {
             throw ValidationException::withMessages([
                 'group_price' => ["Supplier wholesale allocation is not configured for '{$product->title}'. Cannot start community drop."],
@@ -472,7 +478,7 @@ class CommunityDropController extends Controller
         if ($authUserId) {
             $userParticipants = $c->participants()
                 ->where('user_id', $authUserId)
-                ->whereIn('status', ['interested', 'reserved', 'confirmed'])
+                ->currentParticipation()
                 ->get();
 
             $hasExpressedInterest = $userParticipants->contains(fn ($p) => $p->status === 'interested');

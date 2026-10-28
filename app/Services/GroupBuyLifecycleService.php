@@ -44,7 +44,7 @@ class GroupBuyLifecycleService
         return $product && $product->status === 'published' && $product->visibility === 'public' && $product->is_active;
     }
 
-    public function availability(GroupBuyCampaign $campaign): array
+    public function availability(GroupBuyCampaign $campaign, bool $checkStock = true): array
     {
         $campaign->loadMissing(['product', 'variant']);
         $reason = null;
@@ -56,6 +56,7 @@ class GroupBuyLifecycleService
         elseif (! in_array($campaign->status, ['active', 'scheduled'], true)) $reason = 'This Price Drop is no longer accepting orders.';
         elseif ($campaign->isExpired()) $reason = 'This Price Drop has ended.';
         elseif ($campaign->status === 'scheduled' || ($campaign->start_at && $campaign->start_at->isFuture())) $reason = 'This Price Drop has not started yet.';
+        elseif ($checkStock && $campaign->product->track_inventory && (int) ($campaign->variant?->stock_quantity ?? $campaign->product->stock_quantity) < max(1, (int) $campaign->product->min_order_quantity)) $reason = 'This Price Drop is out of stock.';
         elseif ($campaign->max_participants !== null && $this->qualifyingCount($campaign) >= $campaign->max_participants) $reason = 'This Price Drop has reached its customer limit.';
 
         return ['can_express_interest' => $reason === null, 'can_order' => $reason === null, 'unavailability_reason' => $reason];
@@ -64,10 +65,16 @@ class GroupBuyLifecycleService
     public function assertOrderable(GroupBuyCampaign $campaign, Product $product, ?ProductVariant $variant): void
     {
         if ((int) $campaign->product_id !== (int) $product->id
-            || ($campaign->product_variant_id && (int) $campaign->product_variant_id !== (int) $variant?->id)) {
+            || ($campaign->product_variant_id && (int) $campaign->product_variant_id !== (int) $variant?->id)
+            || ($variant && ((int) $variant->product_id !== (int) $product->id || ! $variant->is_active))) {
             throw ValidationException::withMessages(['items' => ['The Price Drop does not match this product and variant.']]);
         }
-        $availability = $this->availability($campaign);
+        if (! $variant && $product->activeVariants()->exists()) {
+            throw ValidationException::withMessages(['items' => ['Choose a product variant before ordering this Price Drop.']]);
+        }
+        // Checkout checks inventory before decrementing. Rechecking stock here
+        // after that decrement would incorrectly reject the final available unit.
+        $availability = $this->availability($campaign, false);
         if (! $availability['can_order']) {
             throw ValidationException::withMessages(['items' => [$availability['unavailability_reason']]]);
         }

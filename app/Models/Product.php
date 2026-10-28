@@ -238,6 +238,7 @@ class Product extends Model
     {
         return $this->hasOne(GroupBuyCampaign::class)
             ->where('status', 'active')
+            ->where(fn ($q) => $q->whereNull('start_at')->orWhere('start_at', '<=', now()))
             ->where(function ($q) {
                 $q->whereNull('end_at')->orWhere('end_at', '>', now());
             })

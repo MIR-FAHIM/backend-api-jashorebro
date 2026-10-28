@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class GroupBuyParticipant extends Model
@@ -50,5 +51,14 @@ class GroupBuyParticipant extends Model
     public function order(): BelongsTo
     {
         return $this->belongsTo(Order::class);
+    }
+
+    public function scopeCurrentParticipation(Builder $query): Builder
+    {
+        return $query->where(function ($q) {
+            $q->where(fn ($interest) => $interest->where('status', 'interested')->whereNull('order_id'))
+                ->orWhere(fn ($orders) => $orders->whereIn('status', ['reserved', 'confirmed'])->whereNotNull('order_id')
+                    ->whereHas('order', fn ($order) => $order->where('status', '!=', 'cancelled')->where('payment_status', '!=', 'refunded')));
+        });
     }
 }

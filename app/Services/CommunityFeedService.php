@@ -303,10 +303,11 @@ class CommunityFeedService
             'participants',
         ])
             ->where('status', 'active')
+            ->where(fn ($q) => $q->whereNull('start_at')->orWhere('start_at', '<=', now()))
             ->where(function ($q) {
                 $q->whereNull('end_at')->orWhere('end_at', '>', now());
             })
-            ->whereHas('product', fn ($q) => $q->where('status', 'published')->where('is_active', true));
+            ->whereHas('product', fn ($q) => $q->where('status', 'published')->where('visibility', 'public')->where('is_active', true));
 
         if ($categorySlug) {
             $dropQuery->whereHas('product.category', fn ($q) => $q->where('slug', $categorySlug));
@@ -637,7 +638,7 @@ class CommunityFeedService
         if ($viewer && ! empty($campaignIds)) {
             $participants = GroupBuyParticipant::where('user_id', $viewer->id)
                 ->whereIn('campaign_id', array_unique($campaignIds))
-                ->whereIn('status', ['interested', 'reserved', 'confirmed'])
+                ->currentParticipation()
                 ->get()
                 ->groupBy('campaign_id');
 
@@ -903,11 +904,7 @@ class CommunityFeedService
             ->distinct('user_id')
             ->count('user_id');
 
-        $qualifyingParticipants = $campaign->participants()
-            ->whereIn('status', ['reserved', 'confirmed'])
-            ->whereNotNull('order_id')
-            ->distinct('user_id')
-            ->count('user_id');
+        $qualifyingParticipants = app(GroupBuyLifecycleService::class)->qualifyingCount($campaign);
 
         $target = (int) $campaign->target_participants;
         $progressPercent = $target > 0 ? min(100, (int) round(($qualifyingParticipants / $target) * 100)) : 0;
@@ -966,6 +963,7 @@ class CommunityFeedService
                 'category_slug' => $product->category?->slug,
             ],
             'drop_details' => [
+                ...app(GroupBuyLifecycleService::class)->publicContext($campaign),
                 'id' => $campaign->id,
                 'campaign_code' => $campaign->campaign_code,
                 'title' => $campaign->title,
@@ -990,11 +988,12 @@ class CommunityFeedService
                 'campaign_id' => $campaign->id,
                 'price' => $groupPrice,
                 'original_price' => $retailPrice,
-                'in_stock' => true,
+                'in_stock' => app(GroupBuyLifecycleService::class)->availability($campaign)['can_order'],
             ],
             'allowed_actions' => ['join', 'view', 'share', 'hide', 'less_like_this', 'mute_author', 'report'],
 
             // Legacy backward-compatibility fields
+            ...app(GroupBuyLifecycleService::class)->publicContext($campaign),
             'id' => $campaign->id,
             'campaign_code' => $campaign->campaign_code,
             'title' => $campaign->title,

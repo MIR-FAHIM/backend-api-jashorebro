@@ -49,7 +49,10 @@ class AdminGroupBuyController extends Controller
             $c->distinct_participants_count = $c->distinct_participants_count;
             $c->remaining_needed = $c->remaining_needed;
             $c->progress_percent = $c->progress_percent;
-            return $c;
+            return array_merge($c->toArray(), app(GroupBuyLifecycleService::class)->publicContext($c), [
+                'rules_locked' => $c->participants()->whereNotNull('order_id')->exists(),
+                'can_cancel' => in_array($c->status, ['draft', 'scheduled', 'active'], true),
+            ]);
         });
 
         return response()->json([
@@ -76,8 +79,8 @@ class AdminGroupBuyController extends Controller
             'target_participants' => 'required|integer|min:2',
             'max_participants' => 'nullable|integer|min:2|gte:target_participants',
             'quantity_limit_per_customer' => 'nullable|integer|min:1',
-            'start_at' => 'nullable|date',
-            'end_at' => 'required|date|after:now|after:start_at',
+            'start_at' => 'required_if:status,scheduled|nullable|date',
+            'end_at' => 'required|date|after:now',
             'status' => 'required|in:draft,scheduled,active',
         ]);
 
@@ -90,6 +93,10 @@ class AdminGroupBuyController extends Controller
             if (! $variant) throw ValidationException::withMessages(['product_variant_id' => ['Choose an active variant belonging to this product.']]);
         }
         $validated['start_at'] = $validated['start_at'] ?? now();
+        $validated['quantity_limit_per_customer'] = $validated['quantity_limit_per_customer'] ?? 1;
+        if (\Illuminate\Support\Carbon::parse($validated['end_at'])->lessThanOrEqualTo(\Illuminate\Support\Carbon::parse($validated['start_at']))) {
+            throw ValidationException::withMessages(['end_at' => ['Provide a deadline after the start time.']]);
+        }
         $catalogPrice = isset($variant) ? $variant->effective_price : $product->base_price;
         if ((float) $validated['group_price'] >= (float) $catalogPrice) {
             throw ValidationException::withMessages(['group_price' => ['The Price Drop price must be lower than the ordinary catalogue price.']]);
@@ -137,7 +144,10 @@ class AdminGroupBuyController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $campaign,
+            'data' => array_merge($campaign->toArray(), app(GroupBuyLifecycleService::class)->publicContext($campaign), [
+                'rules_locked' => $campaign->participants()->whereNotNull('order_id')->exists(),
+                'can_cancel' => in_array($campaign->status, ['draft', 'scheduled', 'active'], true),
+            ]),
         ]);
     }
 
@@ -151,7 +161,7 @@ class AdminGroupBuyController extends Controller
             'group_price' => 'sometimes|required|numeric|min:1',
             'target_participants' => 'sometimes|required|integer|min:2',
             'max_participants' => 'nullable|integer|min:2',
-            'quantity_limit_per_customer' => 'nullable|integer|min:1',
+            'quantity_limit_per_customer' => 'sometimes|required|integer|min:1',
             'start_at' => 'nullable|date',
             'end_at' => 'nullable|date',
             'status' => 'sometimes|required|in:draft,scheduled,active',
@@ -182,7 +192,7 @@ class AdminGroupBuyController extends Controller
                 throw ValidationException::withMessages(['max_participants' => ['The customer limit cannot be below the target.']]);
             }
             $catalogPrice = $campaign->variant?->effective_price ?? $campaign->product?->base_price;
-            if ((float) $campaign->group_price >= (float) $catalogPrice) {
+            if (! $hasOrders && (float) $campaign->group_price >= (float) $catalogPrice) {
                 throw ValidationException::withMessages(['group_price' => ['The Price Drop price must be lower than the ordinary catalogue price.']]);
             }
             $campaign->save();
@@ -201,7 +211,8 @@ class AdminGroupBuyController extends Controller
      */
     public function cancel(Request $request, int $id): JsonResponse
     {
-        $validated = $request->validate(['cancellation_reason' => 'required|string|max:500']);
+        $validated = $request->validate(['cancellation_reason' => 'required|string|min:1|max:500']);
+        if (trim($validated['cancellation_reason']) === '') throw ValidationException::withMessages(['cancellation_reason' => ['Provide a cancellation reason.']]);
         app(GroupBuyLifecycleService::class)->cancelCampaign($id, trim($validated['cancellation_reason']));
 
         return response()->json([

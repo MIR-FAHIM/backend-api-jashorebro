@@ -13,6 +13,12 @@ class Order extends Model
     use HasFactory;
 
     protected $hidden = ['idempotency_key', 'checkout_request_hash'];
+    protected $appends = ['requires_refund_review'];
+
+    public function getRequiresRefundReviewAttribute(): bool
+    {
+        return $this->status === 'cancelled' && $this->payment_status === 'paid';
+    }
 
     protected $fillable = [
         'order_number',

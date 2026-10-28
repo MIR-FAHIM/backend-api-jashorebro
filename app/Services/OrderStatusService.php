@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\GroupBuyCampaign;
 use App\Models\GroupBuyParticipant;
 use App\Models\Order;
+use App\Models\OrderItem;
 use App\Models\OrderStatusHistory;
 use App\Models\OrderPaymentHistory;
 use App\Models\Product;
@@ -125,6 +126,7 @@ class OrderStatusService
             $internalNote,
             $eventKey
         ) {
+            $this->lockOrderCampaigns($orderId);
             // Lock the order record to prevent race conditions
             $order = Order::with('items')->where('id', $orderId)->lockForUpdate()->firstOrFail();
             $fromStatus = $order->status;
@@ -151,6 +153,9 @@ class OrderStatusService
 
             // Validate transition rules
             $this->validateTransition($fromStatus, $toStatus, $actorType, $actor, $reason);
+            if ($fromStatus === 'awaiting_group' && $toStatus !== 'cancelled' && ! $this->allCampaignsSucceeded($order)) {
+                throw ValidationException::withMessages(['status' => ['This conditional order must wait until every Price Drop in the order has reached its target. It cannot be advanced manually.']]);
+            }
 
             // Execute inventory & group reservation adjustments for cancellation
             if ($toStatus === 'cancelled' && $fromStatus !== 'cancelled') {
@@ -248,6 +253,7 @@ class OrderStatusService
         }
         $orderId = $orderOrId instanceof Order ? $orderOrId->id : $orderOrId;
         return DB::transaction(function () use ($orderId, $updates, $admin) {
+            $this->lockOrderCampaigns($orderId);
             $order = Order::whereKey($orderId)->lockForUpdate()->firstOrFail();
             if (isset($updates['payment_status']) && $updates['payment_status'] !== $order->payment_status) {
                 $from = $order->payment_status;
@@ -377,15 +383,16 @@ class OrderStatusService
      */
     public function handleGroupCampaignUnlocked(GroupBuyCampaign $campaign): int
     {
-        $participants = GroupBuyParticipant::where('campaign_id', $campaign->id)
-            ->whereIn('status', ['reserved', 'confirmed'])
+        if ($campaign->status !== 'succeeded') return 0;
+        $participants = $campaign->activeParticipants()
             ->with('order')
             ->get();
 
         $count = 0;
+        $unlockedUsers = [];
         foreach ($participants as $participant) {
             $order = $participant->order;
-            if ($order && $order->status === 'awaiting_group') {
+            if ($order && $order->status === 'awaiting_group' && $this->allCampaignsSucceeded($order)) {
                 $this->transition(
                     orderOrId: $order,
                     toStatus: 'pending',
@@ -396,11 +403,12 @@ class OrderStatusService
                     eventKey: "campaign_{$campaign->id}_unlocked_order_{$order->id}"
                 );
                 $count++;
+                $unlockedUsers[] = $participant->user_id;
             }
         }
 
         // In-App Notification: Notify all campaign participants that drop unlocked
-        $participantUserIds = $participants->pluck('user_id')->unique()->all();
+        $participantUserIds = array_values(array_unique($unlockedUsers));
         if (! empty($participantUserIds)) {
             app(NotificationService::class)->sendToUsers(
                 users: $participantUserIds,
@@ -432,36 +440,51 @@ class OrderStatusService
      */
     public function handleGroupCampaignExpired(GroupBuyCampaign $campaign, ?string $reason = null): int
     {
+        if (! in_array($campaign->status, ['failed', 'cancelled'], true)) return 0;
         $participants = GroupBuyParticipant::where('campaign_id', $campaign->id)
             ->where('status', 'reserved')
+            ->whereNotNull('order_id')
             ->with('order')
             ->get();
 
         $count = 0;
+        $cancelledUsers = [];
         foreach ($participants as $participant) {
             $order = $participant->order;
             if ($order && $order->status === 'awaiting_group') {
+                $order->loadMissing('items');
+                $hasOtherLines = $order->items->contains(fn ($item) => $item->purchase_mode !== 'group_buy'
+                    || (int) $item->group_buy_campaign_id !== (int) $campaign->id);
+                if ($hasOtherLines) {
+                    app(LogService::class)->record(event: 'group_buy.legacy_mixed_order_needs_review', outcome: 'warning',
+                        subject: $order, metadata: ['order_id' => $order->id, 'campaign_id' => $campaign->id],
+                        message: 'An old mixed order needs manual review. Automatic Price Drop expiry did not cancel unrelated items.');
+                    continue;
+                }
+                $customerReason = $reason ?? "Price Drop '{$campaign->title}' ended before reaching its target. Order cancelled and stock reservation released.";
+                if ($order->payment_status === 'paid') $customerReason .= ' Payment was recorded as paid. A separate refund review is required; this action does not send a refund.';
                 $this->transition(
                     orderOrId: $order,
                     toStatus: 'cancelled',
                     actorType: 'system',
                     actor: null,
-                    reason: $reason ?? "Volume drop '{$campaign->title}' concluded without reaching quota. Order cancelled and reservation released.",
+                    reason: $customerReason,
                     internalNote: "Automated cancellation triggered by campaign #{$campaign->id} expiry/cancellation.",
                     eventKey: "campaign_{$campaign->id}_expired_order_{$order->id}"
                 );
                 $count++;
+                $cancelledUsers[] = $participant->user_id;
             }
         }
 
         // In-App Notification: Notify affected participants
-        $participantUserIds = $participants->pluck('user_id')->unique()->all();
+        $participantUserIds = array_values(array_unique($cancelledUsers));
         if (! empty($participantUserIds)) {
             app(NotificationService::class)->sendToUsers(
                 users: $participantUserIds,
                 event: 'group_buy.cancelled',
                 title: "Volume Drop Update: {$campaign->title}",
-                message: "The drop for '{$campaign->title}' concluded without reaching the quota. Your reserved order has been released.",
+                message: "The Price Drop '{$campaign->title}' ended before its target. Your conditional order was cancelled and stock released. If payment was recorded, a separate refund review is required; no refund is sent by this action.",
                 subject: $campaign,
                 actionUrl: '/orders',
                 audience: 'customer',
@@ -470,5 +493,21 @@ class OrderStatusService
         }
 
         return $count;
+    }
+
+    protected function lockOrderCampaigns(int $orderId): void
+    {
+        $ids = OrderItem::where('order_id', $orderId)->where('purchase_mode', 'group_buy')
+            ->whereNotNull('group_buy_campaign_id')->pluck('group_buy_campaign_id')->unique()->sort();
+        if ($ids->isNotEmpty()) GroupBuyCampaign::whereIn('id', $ids)->orderBy('id')->lockForUpdate()->get(['id']);
+    }
+
+    protected function allCampaignsSucceeded(Order $order): bool
+    {
+        $order->loadMissing('items');
+        $groupItems = $order->items->where('purchase_mode', 'group_buy');
+        if ($groupItems->isEmpty() || $groupItems->contains(fn ($item) => ! $item->group_buy_campaign_id)) return false;
+        $ids = $groupItems->pluck('group_buy_campaign_id')->unique();
+        return GroupBuyCampaign::whereIn('id', $ids)->where('status', 'succeeded')->count() === $ids->count();
     }
 }

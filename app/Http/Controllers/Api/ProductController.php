@@ -8,6 +8,7 @@ use App\Models\GroupBuyCampaign;
 use App\Models\Product;
 use App\Models\Seller;
 use App\Models\UserPick;
+use App\Services\GroupBuyLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -193,6 +194,7 @@ class ProductController extends Controller
         if ($product->activeCampaign) {
             $ac = $product->activeCampaign;
             $activeCampaignData = [
+                ...app(GroupBuyLifecycleService::class)->publicContext($ac),
                 'id' => $ac->id,
                 'campaign_code' => $ac->campaign_code,
                 'title' => $ac->title,
@@ -342,6 +344,7 @@ class ProductController extends Controller
                 }
             })
             ->where('status', 'published')
+            ->where('visibility', 'public')->where('is_active', true)
             ->firstOrFail();
 
         $campaign = $product->activeCampaign;
@@ -356,6 +359,7 @@ class ProductController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
+                ...app(GroupBuyLifecycleService::class)->publicContext($campaign),
                 'id' => $campaign->id,
                 'campaign_code' => $campaign->campaign_code,
                 'title' => $campaign->title,
