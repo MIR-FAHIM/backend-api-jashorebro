@@ -12,6 +12,7 @@ use App\Models\ProductVariant;
 use App\Models\User;
 use App\Services\CommunityCommercialService;
 use App\Services\EarningsService;
+use App\Services\GroupBuyLifecycleService;
 use App\Services\LogService;
 use App\Services\NotificationService;
 use App\Services\OrderStatusService;
@@ -26,7 +27,8 @@ class OrderController extends Controller
     public function __construct(
         protected OrderStatusService $orderStatusService,
         protected CommunityCommercialService $commercialService,
-        protected EarningsService $earningsService
+        protected EarningsService $earningsService,
+        protected GroupBuyLifecycleService $groupLifecycle
     ) {}
 
     /**
@@ -50,10 +52,16 @@ class OrderController extends Controller
         ]);
 
         $itemsQuote = [];
+        $this->groupLifecycle->validateCart($request->input('items'));
         $subtotal = 0.00;
         $maxShippingCharge = 0.00;
         $allFreeShipping = true;
         $buyer = $request->user('sanctum') ?? $request->user();
+        $groupLines = collect($request->input('items'))->where('purchase_mode', 'group_buy');
+        if ($groupLines->isNotEmpty()) {
+            $campaign = GroupBuyCampaign::findOrFail($groupLines->first()['campaign_id']);
+            $this->groupLifecycle->assertCustomerCapacity($campaign, $buyer?->id ?? 0, (int) $groupLines->sum('quantity'));
+        }
 
         foreach ($request->input('items') as $line) {
             $product = Product::with('activeVariants')->findOrFail($line['product_id']);
@@ -109,6 +117,9 @@ class OrderController extends Controller
                 'variant_id' => $variant?->id,
                 'variant_name' => $variant?->name,
                 'purchase_mode' => $mode,
+                'campaign_id' => $mode === 'group_buy' ? $campaign->id : null,
+                'campaign' => $mode === 'group_buy' ? $this->groupLifecycle->publicContext($campaign) : null,
+                'campaign_terms_hash' => $mode === 'group_buy' ? $this->groupLifecycle->termsHash($campaign) : null,
                 'earning_model' => $attrib['earning_model'],
                 'unit_price' => $unitPrice,
                 'quantity' => $quantity,
@@ -159,6 +170,8 @@ class OrderController extends Controller
                 'items.*.recommender_id' => 'nullable|integer',
                 'items.*.attribution_token' => 'nullable|string|max:255',
                 'items.*.attribution_visitor_token' => 'nullable|string|max:255',
+                'items.*.expected_unit_price' => 'nullable|numeric|min:0',
+                'items.*.expected_campaign_terms_hash' => 'nullable|string|size:64',
                 'payment_method' => 'required|in:cod,bkash,nagad',
                 'address_id' => 'nullable|integer',
                 'shipping_name' => 'required_without:address_id|nullable|string|max:100',
@@ -188,6 +201,16 @@ class OrderController extends Controller
                     }
 
                     return $existing;
+                }
+
+                $this->groupLifecycle->validateCart($validated['items']);
+                $groupLines = collect($validated['items'])->where('purchase_mode', 'group_buy');
+                $lockedCampaigns = GroupBuyCampaign::whereIn('id', $groupLines->pluck('campaign_id')->unique()->sort())
+                    ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+                if ($groupLines->isNotEmpty()) {
+                    $selectedCampaign = $lockedCampaigns->get($groupLines->first()['campaign_id']);
+                    if (! $selectedCampaign) throw ValidationException::withMessages(['items' => ['This Price Drop is unavailable.']]);
+                    $this->groupLifecycle->assertCustomerCapacity($selectedCampaign, $user->id, (int) $groupLines->sum('quantity'));
                 }
 
                 $subtotal = 0.00;
@@ -232,23 +255,10 @@ class OrderController extends Controller
 
                     // Determine price & handle group campaign
                     if ($mode === 'group_buy') {
-                        $campaign = GroupBuyCampaign::where('id', $line['campaign_id'])->lockForUpdate()->firstOrFail();
+                        $campaign = $lockedCampaigns->get($line['campaign_id']);
                         if ($campaign->status !== 'active' || $campaign->isExpired()) {
                             throw ValidationException::withMessages([
                                 'items' => ["The drop campaign '{$campaign->title}' has ended."],
-                            ]);
-                        }
-
-                        // Enforce limit per customer
-                        $existingQty = GroupBuyParticipant::where('campaign_id', $campaign->id)
-                            ->where('user_id', $user->id)
-                            ->whereIn('status', ['reserved', 'confirmed'])
-                            ->whereNotNull('order_id')
-                            ->sum('quantity');
-
-                        if (($existingQty + $quantity) > $campaign->quantity_limit_per_customer) {
-                            throw ValidationException::withMessages([
-                                'items' => ["Maximum allowed quantity for this drop is {$campaign->quantity_limit_per_customer} per customer."],
                             ]);
                         }
 
@@ -272,6 +282,13 @@ class OrderController extends Controller
                     }
 
                     $lineTotal = round($unitPrice * $quantity, 2);
+                    if (isset($line['expected_unit_price']) && (int) round($unitPrice * 100) !== (int) round((float) $line['expected_unit_price'] * 100)) {
+                        throw ValidationException::withMessages(['items' => ['A product price changed before acceptance. Review the updated quote and confirm again.']]);
+                    }
+                    if ($mode === 'group_buy' && isset($line['expected_campaign_terms_hash'])
+                        && ! hash_equals($this->groupLifecycle->termsHash($campaign), $line['expected_campaign_terms_hash'])) {
+                        throw ValidationException::withMessages(['items' => ['Price Drop terms changed before acceptance. Review the updated campaign and confirm again.']]);
+                    }
                     $subtotal += $lineTotal;
 
                     if (! $product->is_free_shipping) {
@@ -373,6 +390,7 @@ class OrderController extends Controller
 
                 // Save group buy reservations
                 foreach ($groupParticipantsToCreate as $gpData) {
+                    $this->groupLifecycle->freezePolicy($gpData['campaign']);
                     GroupBuyParticipant::create([
                         'campaign_id' => $gpData['campaign']->id,
                         'user_id' => $user->id,
@@ -451,26 +469,7 @@ class OrderController extends Controller
 
                 // Inspect campaigns: If target reached, mark succeeded!
                 foreach ($campaignsToInspect as $camp) {
-                    $distinctCount = GroupBuyParticipant::where('campaign_id', $camp->id)
-                        ->whereIn('status', ['reserved', 'confirmed'])
-                        ->whereNotNull('order_id')
-                        ->distinct('user_id')
-                        ->count('user_id');
-
-                    if ($distinctCount >= $camp->target_participants && $camp->status !== 'succeeded') {
-                        $camp->update([
-                            'status' => 'succeeded',
-                            'success_at' => now(),
-                        ]);
-
-                        // Confirm reservations
-                        GroupBuyParticipant::where('campaign_id', $camp->id)
-                            ->where('status', 'reserved')
-                            ->update(['status' => 'confirmed']);
-
-                        // Unlock all awaiting orders for this campaign
-                        $this->orderStatusService->handleGroupCampaignUnlocked($camp);
-                    }
+                    $this->groupLifecycle->inspectTarget($camp);
                 }
 
                 return $order;

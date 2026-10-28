@@ -17,7 +17,7 @@ class GroupBuyParticipant extends Model
         'product_variant_id',
         'quantity',
         'unit_price',
-        'status', // reserved, confirmed, cancelled, released
+        'status', // interested, reserved, confirmed, cancelled, released
         'reserved_at',
         'cancelled_at',
     ];

@@ -220,6 +220,7 @@ class CommunityCommercialService
             'terms_snapshot' => [
                 'policy_version' => '1.0',
                 'group_price' => $groupPrice,
+                'group_campaign' => app(GroupBuyLifecycleService::class)->publicContext($campaign),
                 'organizer_commission' => $organizerCommission,
                 'calculated_at' => now()->toIso8601String(),
             ],
@@ -381,10 +382,7 @@ class CommunityCommercialService
                 || ($campaign->product_variant_id && (int) $campaign->product_variant_id !== (int) ($variant?->id))) {
                 throw ValidationException::withMessages(['items' => ['The selected drop campaign does not match this product and variant.']]);
             }
-            if ($campaign->status !== 'active' || $campaign->isExpired()
-                || ($campaign->start_at && $campaign->start_at->isFuture())) {
-                throw ValidationException::withMessages(['items' => ['The selected drop campaign is not active.']]);
-            }
+            app(GroupBuyLifecycleService::class)->assertOrderable($campaign, $product, $variant);
         }
 
         if (! empty($line['shop_listing_id'])) {

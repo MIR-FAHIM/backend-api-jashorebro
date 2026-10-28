@@ -11,9 +11,11 @@ use App\Models\ProductVariant;
 use App\Models\User;
 use App\Services\LogService;
 use App\Services\NotificationService;
+use App\Services\GroupBuyLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class CommunityDropController extends Controller
@@ -30,6 +32,7 @@ class CommunityDropController extends Controller
     {
         $products = Product::with(['primaryImage', 'activeVariants'])
             ->where('status', 'published')
+            ->where('visibility', 'public')
             ->where('is_group_drop_enabled', true)
             ->where('is_active', true)
             ->get();
@@ -78,6 +81,8 @@ class CommunityDropController extends Controller
             'organizer.profile',
         ])
             ->where('status', 'active')
+            ->whereHas('product', fn ($q) => $q->where('status', 'published')->where('visibility', 'public')->where('is_active', true))
+            ->where(fn ($q) => $q->whereNull('start_at')->orWhere('start_at', '<=', now()))
             ->where(function ($q) {
                 $q->whereNull('end_at')->orWhere('end_at', '>', now());
             });
@@ -131,6 +136,8 @@ class CommunityDropController extends Controller
             'variant',
             'organizer.profile',
         ])
+            ->whereNotIn('status', ['draft'])
+            ->whereHas('product', fn ($q) => $q->where('status', 'published')->where('visibility', 'public')->where('is_active', true))
             ->where(function ($q) use ($idOrCode) {
                 if (is_numeric($idOrCode)) {
                     $q->where('id', (int) $idOrCode);
@@ -206,7 +213,10 @@ class CommunityDropController extends Controller
      */
     public function toggleInterest(Request $request, string $id): JsonResponse
     {
+        $request->validate(['is_interested' => 'sometimes|required|boolean']);
         $user = $request->user();
+
+        return DB::transaction(function () use ($request, $id, $user) {
 
         $campaign = GroupBuyCampaign::with(['product.primaryImage', 'product.category', 'variant', 'organizer.profile'])
             ->where(function ($q) use ($id) {
@@ -216,11 +226,12 @@ class CommunityDropController extends Controller
                     $q->where('campaign_code', $id);
                 }
             })
-            ->firstOrFail();
+            ->lockForUpdate()->firstOrFail();
 
-        if ($campaign->status !== 'active' || $campaign->isExpired()) {
+        $availability = app(GroupBuyLifecycleService::class)->availability($campaign);
+        if (! $availability['can_express_interest']) {
             throw ValidationException::withMessages([
-                'drop' => ['This drop campaign has ended and is no longer accepting participants.'],
+                'drop' => [$availability['unavailability_reason']],
             ]);
         }
 
@@ -257,14 +268,16 @@ class CommunityDropController extends Controller
             })
             ->first();
 
-        if ($existingInterest) {
-            $existingInterest->update([
+        $desired = $request->has('is_interested') ? $request->boolean('is_interested') : ! $existingInterest;
+        if (! $desired && $existingInterest) {
+            GroupBuyParticipant::where('campaign_id', $campaign->id)->where('user_id', $user->id)
+                ->whereNull('order_id')->whereIn('status', ['interested', 'reserved'])->update([
                 'status' => 'cancelled',
                 'cancelled_at' => now(),
             ]);
             $isJoined = false;
             $message = "You have removed your interest from '{$campaign->title}'.";
-        } else {
+        } elseif ($desired && ! $existingInterest) {
             GroupBuyParticipant::updateOrCreate(
                 [
                     'campaign_id' => $campaign->id,
@@ -281,6 +294,9 @@ class CommunityDropController extends Controller
             );
             $isJoined = true;
             $message = "You're in! You expressed interest in '{$campaign->title}'.";
+        } else {
+            $isJoined = $desired;
+            $message = $desired ? 'Your interest is saved. No order has been placed.' : 'Your interest is removed.';
         }
 
         $this->logService->record(
@@ -305,6 +321,7 @@ class CommunityDropController extends Controller
             'data' => $formatted,
             'drop' => $formatted,
         ]);
+        }, 3);
     }
 
     /**
@@ -439,11 +456,7 @@ class CommunityDropController extends Controller
             ->distinct('user_id')
             ->count('user_id');
 
-        $qualifyingParticipants = $c->participants()
-            ->whereIn('status', ['reserved', 'confirmed'])
-            ->whereNotNull('order_id')
-            ->distinct('user_id')
-            ->count('user_id');
+        $qualifyingParticipants = app(GroupBuyLifecycleService::class)->qualifyingCount($c);
 
         $target = (int) $c->target_participants;
         $progressPercent = $target > 0 ? min(100, (int) round(($qualifyingParticipants / $target) * 100)) : 0;
@@ -500,6 +513,7 @@ class CommunityDropController extends Controller
         ])->values()->all() ?? [];
 
         return [
+            ...app(GroupBuyLifecycleService::class)->publicContext($c),
             'id' => $c->id,
             'campaign_code' => $c->campaign_code,
             'title' => $c->title,
@@ -545,6 +559,15 @@ class CommunityDropController extends Controller
                 'title' => $product->title,
                 'slug' => $product->slug,
                 'base_price' => (float) $product->base_price,
+                'is_active' => (bool) $product->is_active,
+                'status' => $product->status,
+                'visibility' => $product->visibility,
+                'track_inventory' => (bool) $product->track_inventory,
+                'stock_quantity' => $product->stock_quantity,
+                'min_order_quantity' => $product->min_order_quantity,
+                'max_order_quantity' => $product->max_order_quantity,
+                'is_cod_available' => (bool) $product->is_cod_available,
+                'has_active_variants' => $product->activeVariants()->exists(),
                 'description' => $product->description,
                 'specifications' => $specs,
                 'is_free_shipping' => (bool) $product->is_free_shipping,
@@ -559,7 +582,10 @@ class CommunityDropController extends Controller
             ] : null,
             'variant' => $c->variant ? [
                 'id' => $c->variant->id,
-                'title' => $c->variant->title,
+                'name' => $c->variant->name,
+                'title' => $c->variant->name,
+                'stock_quantity' => $c->variant->stock_quantity,
+                'is_active' => (bool) $c->variant->is_active,
                 'sku' => $c->variant->sku,
                 'effective_price' => (float) $c->variant->effective_price,
             ] : null,

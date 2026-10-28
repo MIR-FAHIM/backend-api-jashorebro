@@ -31,11 +31,13 @@ class GroupBuyCampaign extends Model
         'originating_shop_id',
         'organizer_commission_per_unit',
         'supplier_allocation_price',
+        'lifecycle_policy_snapshot',
     ];
 
     protected function casts(): array
     {
         return [
+            'lifecycle_policy_snapshot' => 'array',
             'group_price' => 'float',
             'organizer_commission_per_unit' => 'float',
             'supplier_allocation_price' => 'float',
@@ -82,7 +84,10 @@ class GroupBuyCampaign extends Model
     public function activeParticipants(): HasMany
     {
         return $this->hasMany(GroupBuyParticipant::class, 'campaign_id')
-            ->whereIn('status', ['reserved', 'confirmed']);
+            ->whereIn('status', ['reserved', 'confirmed'])
+            ->whereNotNull('order_id')
+            ->whereHas('order', fn ($query) => $query->where('status', '!=', 'cancelled')
+                ->where('payment_status', '!=', 'refunded'));
     }
 
     /**
@@ -106,6 +111,6 @@ class GroupBuyCampaign extends Model
 
     public function isExpired(): bool
     {
-        return $this->end_at !== null && $this->end_at->isPast();
+        return $this->end_at !== null && $this->end_at->lessThanOrEqualTo(now());
     }
 }
