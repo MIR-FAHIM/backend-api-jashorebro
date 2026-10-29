@@ -344,8 +344,30 @@ Validation failure envelope (HTTP 422):
 
 ### 6.1 Public Products List
 - **Method:** `GET`
-- **Path:** `/api/products`
-- **Rules:** Only returns `status === 'published'` and `visibility === 'public'`. Excludes `cost_price`.
+- **Path:** `/api/products/get-products` (compatibility alias: `/api/products`)
+- **Rules:** Only returns `status === 'published'`, `visibility === 'public'` and `is_active === true`. Excludes `cost_price`.
+- **Pagination:** `page` defaults to `1`; `per_page` defaults to `20` and is clamped to `1..50`. Returns `data` plus `meta.current_page`, `meta.last_page`, `meta.per_page` and `meta.total`. An unknown category slug or ID returns an empty paginated result, rather than the unfiltered catalog.
+- **Filters:** `q`, `category` (slug or ID, includes immediate child categories), `seller` (slug or ID), `is_featured`, `is_drop_ready`, `is_new_arrival`, `min_price`, `max_price`. `sort` supports `latest`, `price_low`, `price_high`, `rating`. Price filters and sorting retain their existing product `base_price` behavior.
+
+Public card fields shared by list, featured and product-detail responses:
+
+| Field | Type | Meaning |
+| :--- | :--- | :--- |
+| `id`, `slug` | integer, string | Keep the numeric product ID for mutations; use the slug or ID for detail routes. |
+| `base_price`, `compare_price`, `discount_percent` | number, nullable number, nullable integer | Existing product-level pricing remains unchanged. A product-level comparison must not be paired with an unrelated variant's price. |
+| `has_variants` | boolean | Whether the product currently has at least one active, non-deleted variant. |
+| `price_from`, `price_to` | number | Minimum and maximum normal price across active variants (`price_override`, falling back to `base_price` per variant). With no active variants, both equal `base_price`. Includes active variants that are currently out of stock; the detail screen determines the selected option and its price. These are display ranges, not a checkout quote or Price Drop price. |
+| `track_inventory` | boolean | Whether stock limits are enforced. Zero stock on an untracked product must not be presented as sold out. |
+| `stock_quantity` | integer | Existing effective stock: sum of active variant stock when any non-deleted variant is configured, otherwise product stock. An aggregate across variants does not guarantee that one option meets the minimum order. |
+| `min_order_quantity` | integer | Minimum units for a purchase, normalized to at least one for the availability summary. |
+| `availability` | `in_stock`, `out_of_stock`, `not_tracked` | For tracked variant products, `in_stock` requires at least one active variant with enough units for `min_order_quantity`; for products without active variants, compares effective stock with that minimum. `not_tracked` makes no numeric stock promise. This describes inventory only; existing purchase-mode and campaign rules still apply. |
+| `image` | nullable string | Actual primary image URL, falling back to the first gallery image. `null` means no image is available; clients should render their own no-image state. |
+
+The paginated list also supplies viewer context:
+
+- `current_user: { has_picked: boolean, pick_id: integer|null }` reflects an existing Pick, including a private Pick. Guests receive `false` and `null`.
+- `picked_by_friends: { count: integer, users: array }` includes up to three confirmed friends with publicly visible Picks from active authors and active public products, newest first. User fields are `id`, `name`, `username`, `avatar_url`, `profile_url` and `recommendation_code`. Product detail and the paginated friends-who-picked endpoint enforce the same visibility scope. A recommendation entry must retain that code on its product route; the product's marketplace price does not change.
+- `/api/products/get-featured-products` uses the shared card fields but does not add the list's viewer context. Product detail supplies its existing, richer viewer context.
 
 ### 6.2 Public Product Detail
 - **Method:** `GET`
@@ -774,10 +796,16 @@ In `GET /api/admin/orders`:
 ### 12.2 API Endpoints Matrix
 
 #### A. My Picks (Curated Product Recommendations)
-- `GET /api/community/picks`: Retrieve authenticated user's picks list.
-- `POST /api/community/picks/{productId}`: Curate product to user's picks. Body: `{ personal_caption, is_featured }`. Returns assigned `recommendation_code` (`REC-U{id}-P{id}`).
-- `DELETE /api/community/picks/{pickId}`: Remove product from user's picks.
-- `GET /api/community/users/{userId}/picks`: Publicly view another user's curated picks.
+- `GET /api/picks/get-my-picks`: Authenticated owner's collection. Returns `{ success, data: Pick[], picks: Pick[] }`. Supplying `page` or `per_page` enables standard `meta`; `per_page` defaults to 20 and is clamped to 1..50. Without those parameters, the compatibility response contains the complete owned collection. Private Picks and Picks for unavailable products remain manageable by their owner.
+- `POST /api/picks/add-pick`: Save an existing active public catalog product. Body: `{ product_id, caption?, personal_caption?, is_featured?, is_public? }`; captions are optional and at most 1000 characters. Returns HTTP 201 `{ success, has_picked: true, data: Pick, pick: Pick }`. A user/product pair is unique; duplicate saves return validation errors. Private saves do not notify followers. Saving a Pick does not create or change a product, inventory or marketplace price.
+- `PUT/PATCH /api/picks/update-pick/{pickId}`: Owner-only caption, `display_order`, `is_featured` and `is_public` changes. `personal_caption` is accepted as a caption alias; explicit `caption` takes precedence. Returns `{ success, data: Pick }` with the complete current safe product summary. Unknown or another user's Pick ID returns 404; `user_id` and `product_id` cannot be reassigned through this endpoint.
+- `DELETE /api/picks/delete-pick/{pickId}`: Delete the authenticated owner's Pick relation only. The catalog product, price and other users' Picks remain unchanged. Returns `{ success, has_picked: false }`; another user's Pick ID returns 404.
+- `GET /api/picks/get-user-picks/{usernameOrId}`: Public collection, returning `{ success, data: { user: { id, name, username }, picks: Pick[] }, meta? }`. The same optional `page`/`per_page` behavior applies. Only public Picks from active authors and active public products appear. Blocked viewers receive 403; inactive or missing authors return 404. Public ordering is featured first, then `display_order`, then newest Pick ID as a stable tie-breaker.
+- `GET /api/picks/lookup-pick-code/{code}`: Publicly accessible recommendation lookup returns the same safe Pick shape and enforces public/active/blocked visibility. It does not establish attribution; the existing verified-visit endpoint retains that responsibility.
+
+`Pick` contains `id`, `user_id`, `product_id`, `caption`, `personal_caption` (same value), `display_order`, `is_featured`, `is_public`, `recommendation_code`, `created_at`, `updated_at` and `product`. The product uses the customer-safe summary from section 6.1, including current `base_price`, `has_variants`, `price_from`, `price_to`, image, category, seller, availability and configured recommendation flags/amount. A safe `active_variants` list retains IDs, names, effective/public comparison prices, stock, attributes and image URLs for existing option-aware consumers, without internal allocations. `product.is_available` is true only for published/public/active products. Owner responses retain an unavailable product's title and current price with `is_available: false`; a deleted product relation is `null`. Clients must suppress public shopping/share actions for unavailable products and private Picks. Public product payloads exclude internal costs, supplier allocations, administrative fields and raw variant models.
+
+`GET /api/users/get-user-profile/{username}` retains its public identity/relationship envelope and adds `data.picks_meta: { current_page, last_page, per_page, total }` alongside `data.picks: Pick[]`. Use `picks_page` and `picks_per_page` (default 12, clamped 1..50) to access the complete public collection. `stats.picks_count` equals that public total. Inactive/missing authors return 404 and blocked viewers return 403. Bio, locality and district are actual profile values or `null`; no location or bio is fabricated. Private/unavailable Picks are excluded even when viewing one's own public profile; account management remains under My Picks.
 
 #### B. Community Storefront Studio & Public Store
 - `GET /api/community/shop/me`: Authenticated user's storefront details and listings.

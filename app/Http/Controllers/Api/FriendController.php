@@ -11,6 +11,7 @@ use App\Models\Order;
 use App\Models\User;
 use App\Models\UserPick;
 use App\Services\EarningsService;
+use App\Support\PickSummary;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -467,7 +468,7 @@ class FriendController extends Controller
         $currentUser = $request->user() ?? auth('sanctum')->user();
 
         /** @var User|null $user */
-        $user = User::with('profile')->where('username', $username)->first();
+        $user = User::with('profile')->where('username', $username)->where('status', 'active')->first();
 
         if (! $user) {
             return response()->json([
@@ -493,7 +494,6 @@ class FriendController extends Controller
             $friendshipId = $friendship?->id;
         }
 
-        $picksCount = UserPick::where('user_id', $user->id)->publiclyVisible()->count();
         $dropsJoinedCount = GroupBuyParticipant::where('user_id', $user->id)
             ->whereIn('status', ['reserved', 'confirmed'])
             ->distinct('campaign_id')
@@ -504,20 +504,23 @@ class FriendController extends Controller
 
         // Active shop if exists with active listings
         $shop = CommunityShop::with(['activeListings' => function ($q) {
-                $q->orderBy('display_order', 'asc')->with(['product.primaryImage']);
+                $q->whereHas('product', fn ($product) => $product->publiclyAvailable())
+                    ->orderBy('display_order', 'asc')->with(['product.primaryImage']);
             }])
             ->where('user_id', $user->id)
             ->whereIn('status', ['active', 'verified'])
             ->first();
 
         // User's public picks
-        $publicPicks = UserPick::with(['product.primaryImage', 'product.activeVariants'])
+        $picksPerPage = max(1, min((int) $request->input('picks_per_page', 12), 50));
+        $publicPicks = UserPick::with(PickSummary::relations())
             ->where('user_id', $user->id)
             ->publiclyVisible()
             ->orderBy('is_featured', 'desc')
             ->orderBy('display_order', 'asc')
-            ->limit(12)
-            ->get();
+            ->orderBy('id', 'desc')
+            ->paginate($picksPerPage, ['*'], 'picks_page', max(1, (int) $request->input('picks_page', 1)));
+        $picksCount = $publicPicks->total();
 
         // Drops organized by this user with active participant count
         $organizedDrops = GroupBuyCampaign::with(['product.primaryImage', 'variant'])
@@ -526,6 +529,7 @@ class FriendController extends Controller
             }])
             ->where('organizer_user_id', $user->id)
             ->where('status', 'active')
+            ->whereHas('product', fn ($product) => $product->publiclyAvailable())
             ->orderBy('id', 'desc')
             ->limit(6)
             ->get();
@@ -544,11 +548,11 @@ class FriendController extends Controller
                 'is_seller' => $user->isSeller(),
                 'is_community_seller' => $user->isCommunitySeller(),
                 'profile' => [
-                    'bio' => $user->profile?->bio ?? 'Community member in JashoreBro.',
+                    'bio' => $user->profile?->bio,
                     'avatar_url' => $user->profile?->avatar_url,
                     'cover_url' => $user->profile?->cover_image_url,
-                    'locality' => $user->profile?->locality ?? 'Jashore',
-                    'district' => 'Jashore',
+                    'locality' => $user->profile?->locality,
+                    'district' => $user->profile?->district,
                     'website_url' => $user->profile?->website_url,
                 ],
                 'stats' => [
@@ -588,24 +592,13 @@ class FriendController extends Controller
                         ];
                     })->values()->all(),
                 ] : null,
-                'picks' => $publicPicks->map(function ($pick) {
-                    return [
-                        'id' => $pick->id,
-                        'caption' => $pick->caption,
-                        'is_featured' => (bool) $pick->is_featured,
-                        'recommendation_code' => $pick->recommendation_code,
-                        'product' => $pick->product ? [
-                            'id' => $pick->product->id,
-                            'title' => $pick->product->title,
-                            'slug' => $pick->product->slug,
-                            'base_price' => (float) $pick->product->base_price,
-                            'compare_price' => $pick->product->compare_price ? (float) $pick->product->compare_price : null,
-                            'brand' => $pick->product->brand,
-                            'stock_quantity' => $pick->product->stock_quantity,
-                            'image' => $pick->product->primaryImage?->thumbnail_url ?? $pick->product->primaryImage?->image_url ?? $pick->product->image,
-                        ] : null,
-                    ];
-                })->values()->all(),
+                'picks' => $publicPicks->getCollection()->map(fn (UserPick $pick) => PickSummary::make($pick))->values()->all(),
+                'picks_meta' => [
+                    'current_page' => $publicPicks->currentPage(),
+                    'last_page' => $publicPicks->lastPage(),
+                    'per_page' => $publicPicks->perPage(),
+                    'total' => $publicPicks->total(),
+                ],
                 'drops' => $organizedDrops->map(function ($drop) {
                     return [
                         'id' => $drop->id,

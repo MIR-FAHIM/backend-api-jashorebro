@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\UserPick;
 use App\Services\LogService;
 use App\Services\NotificationService;
+use App\Support\PickSummary;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -27,19 +28,20 @@ class UserPickController extends Controller
     {
         $user = $request->user();
 
-        $query = UserPick::with(['product.primaryImage', 'product.activeVariants'])
+        $query = UserPick::with(PickSummary::relations())
             ->where('user_id', $user->id)
             ->orderBy('display_order', 'asc')
             ->orderBy('id', 'desc');
 
         if ($request->has('per_page') || $request->has('page')) {
-            $perPage = min((int) $request->input('per_page', 20), 50);
+            $perPage = max(1, min((int) $request->input('per_page', 20), 50));
             $paginated = $query->paginate($perPage);
+            $picks = $paginated->getCollection()->map(fn (UserPick $pick) => PickSummary::make($pick))->values();
 
             return response()->json([
                 'success' => true,
-                'data' => $paginated->items(),
-                'picks' => $paginated->items(),
+                'data' => $picks,
+                'picks' => $picks,
                 'meta' => [
                     'current_page' => $paginated->currentPage(),
                     'last_page' => $paginated->lastPage(),
@@ -49,7 +51,7 @@ class UserPickController extends Controller
             ]);
         }
 
-        $picks = $query->get();
+        $picks = $query->get()->map(fn (UserPick $pick) => PickSummary::make($pick))->values();
 
         return response()->json([
             'success' => true,
@@ -64,7 +66,11 @@ class UserPickController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'product_id' => 'required',
+            'product_id' => ['required', function ($attribute, $value, $fail) {
+                if (! is_int($value) && ! is_string($value)) {
+                    $fail('Choose a valid catalog product.');
+                }
+            }],
             'caption' => 'nullable|string|max:1000',
             'personal_caption' => 'nullable|string|max:1000',
             'is_featured' => 'nullable|boolean',
@@ -100,8 +106,7 @@ class UserPickController extends Controller
                 }
                 $q->orWhere('slug', $productIdOrSlug);
             })
-            ->where('status', 'published')
-            ->where('visibility', 'public')
+            ->publiclyAvailable()
             ->first();
 
         if (! $product) {
@@ -145,30 +150,34 @@ class UserPickController extends Controller
             ]
         );
 
-        // Notify followers of new pick
-        $followers = $user->followers()->pluck('follower_id');
-        foreach ($followers as $followerId) {
-            $follower = User::find($followerId);
-            if ($follower) {
-                $this->notificationService->sendToUser(
-                    user: $follower,
-                    event: 'community.new_pick',
-                    title: "{$user->name} shared a new Pick!",
-                    message: "Check out {$user->name}'s recommendation for {$product->title}.",
-                    subject: $pick,
-                    actionUrl: "/p/{$product->slug}?rec={$pick->recommendation_code}",
-                    audience: 'customer',
-                    dedupKey: "notif_pick_{$pick->id}_to_{$followerId}"
-                );
+        // Private shelves must not announce their contents to followers.
+        if ($pick->is_public) {
+            $followers = $user->followers()->pluck('follower_id');
+            foreach ($followers as $followerId) {
+                $follower = User::find($followerId);
+                if ($follower) {
+                    $this->notificationService->sendToUser(
+                        user: $follower,
+                        event: 'community.new_pick',
+                        title: "{$user->name} shared a new Pick!",
+                        message: "Check out {$user->name}'s recommendation for {$product->title}.",
+                        subject: $pick,
+                        actionUrl: "/p/{$product->slug}?rec={$pick->recommendation_code}",
+                        audience: 'customer',
+                        dedupKey: "notif_pick_{$pick->id}_to_{$followerId}"
+                    );
+                }
             }
         }
+
+        $pickData = PickSummary::make($pick->load(PickSummary::relations()));
 
         return response()->json([
             'success' => true,
             'message' => 'Product saved to your picks.',
             'has_picked' => true,
-            'data' => $pick->load(['product.primaryImage']),
-            'pick' => $pick,
+            'data' => $pickData,
+            'pick' => $pickData,
         ], 201);
     }
 
@@ -219,17 +228,22 @@ class UserPickController extends Controller
 
         $validated = $request->validate([
             'caption' => 'nullable|string|max:1000',
-            'display_order' => 'nullable|integer|min:0',
-            'is_featured' => 'nullable|boolean',
-            'is_public' => 'nullable|boolean',
+            'personal_caption' => 'nullable|string|max:1000',
+            'display_order' => 'sometimes|integer|min:0',
+            'is_featured' => 'sometimes|boolean',
+            'is_public' => 'sometimes|boolean',
         ]);
 
+        if (! array_key_exists('caption', $validated) && array_key_exists('personal_caption', $validated)) {
+            $validated['caption'] = $validated['personal_caption'];
+        }
+        unset($validated['personal_caption']);
         $pick->update($validated);
 
         return response()->json([
             'success' => true,
             'message' => 'Pick updated successfully.',
-            'data' => $pick->fresh(['product.primaryImage']),
+            'data' => PickSummary::make($pick->fresh(PickSummary::relations())),
         ]);
     }
 
@@ -254,8 +268,11 @@ class UserPickController extends Controller
      */
     public function userPicks(Request $request, string $username): JsonResponse
     {
-        $targetUser = User::where('username', $username)
-            ->orWhere('id', is_numeric($username) ? (int) $username : 0)
+        $targetUser = User::where(function ($query) use ($username) {
+                $query->where('username', $username)
+                    ->orWhere('id', is_numeric($username) ? (int) $username : 0);
+            })
+            ->where('status', 'active')
             ->firstOrFail();
 
         /** @var User|null $currentUser */
@@ -270,15 +287,17 @@ class UserPickController extends Controller
             }
         }
 
-        $query = UserPick::with(['product.primaryImage'])
+        $query = UserPick::with(PickSummary::relations())
             ->where('user_id', $targetUser->id)
             ->publiclyVisible()
             ->orderBy('is_featured', 'desc')
-            ->orderBy('display_order', 'asc');
+            ->orderBy('display_order', 'asc')
+            ->orderBy('id', 'desc');
 
         if ($request->has('per_page') || $request->has('page')) {
-            $perPage = min((int) $request->input('per_page', 20), 50);
+            $perPage = max(1, min((int) $request->input('per_page', 20), 50));
             $paginated = $query->paginate($perPage);
+            $picks = $paginated->getCollection()->map(fn (UserPick $pick) => PickSummary::make($pick))->values();
 
             return response()->json([
                 'success' => true,
@@ -288,7 +307,7 @@ class UserPickController extends Controller
                         'name' => $targetUser->name,
                         'username' => $targetUser->username,
                     ],
-                    'picks' => $paginated->items(),
+                    'picks' => $picks,
                 ],
                 'meta' => [
                     'current_page' => $paginated->currentPage(),
@@ -299,7 +318,7 @@ class UserPickController extends Controller
             ]);
         }
 
-        $picks = $query->get();
+        $picks = $query->get()->map(fn (UserPick $pick) => PickSummary::make($pick))->values();
 
         return response()->json([
             'success' => true,
@@ -362,11 +381,11 @@ class UserPickController extends Controller
 
         $query = UserPick::with(['user.profile', 'user.communityShop'])
             ->where('product_id', $product->id)
-            ->where('is_public', true)
+            ->publiclyVisible()
             ->whereIn('user_id', $friendIds)
             ->latest('id');
 
-        $perPage = min((int) $request->input('per_page', 20), 50);
+        $perPage = max(1, min((int) $request->input('per_page', 20), 50));
         $paginated = $query->paginate($perPage);
 
         $friends = $paginated->getCollection()->map(function (UserPick $pick) use ($currentUser) {
@@ -408,7 +427,7 @@ class UserPickController extends Controller
      */
     public function lookupCode(Request $request, string $code): JsonResponse
     {
-        $pick = UserPick::with(['product.primaryImage', 'product.activeVariants', 'user:id,name,username'])
+        $pick = UserPick::with([...PickSummary::relations(), 'user:id,name,username'])
             ->where('recommendation_code', $code)
             ->publiclyVisible()
             ->firstOrFail();
@@ -420,7 +439,7 @@ class UserPickController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $pick,
+            'data' => PickSummary::make($pick),
         ]);
     }
 }

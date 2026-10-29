@@ -9,6 +9,7 @@ use App\Models\Product;
 use App\Models\Seller;
 use App\Models\UserPick;
 use App\Services\GroupBuyLifecycleService;
+use App\Support\ProductSummary;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -28,7 +29,9 @@ class ProductController extends Controller
                 'seller:id,store_name,slug,district,upazila,logo_url,rating_avg',
                 'primaryImage',
                 'images',
-            ]);
+                'activeVariants.image',
+            ])
+            ->withCount('variants');
 
         // Search query
         if ($search = $request->string('q')->trim()->value()) {
@@ -41,7 +44,8 @@ class ProductController extends Controller
         }
 
         // Filter by category slug or ID
-        if ($categorySlug = $request->input('category')) {
+        if ($request->filled('category')) {
+            $categorySlug = $request->input('category');
             $category = is_numeric($categorySlug)
                 ? Category::find($categorySlug)
                 : Category::where('slug', $categorySlug)->first();
@@ -49,6 +53,8 @@ class ProductController extends Controller
             if ($category) {
                 $categoryIds = array_merge([$category->id], $category->children()->pluck('id')->all());
                 $query->whereIn('category_id', $categoryIds);
+            } else {
+                $query->whereIn('category_id', []);
             }
         }
 
@@ -91,7 +97,7 @@ class ProductController extends Controller
             default => $query->latest('id'),
         };
 
-        $perPage = min((int) $request->input('per_page', 20), 50);
+        $perPage = max(1, min((int) $request->input('per_page', 20), 50));
         $products = $query->paginate($perPage);
 
         /** @var \App\Models\User|null $currentUser */
@@ -113,7 +119,7 @@ class ProductController extends Controller
                 $friendPicksByProduct = UserPick::with(['user.profile', 'user:id,name,username'])
                     ->whereIn('product_id', $productIds)
                     ->whereIn('user_id', $friendIds)
-                    ->where('is_public', true)
+                    ->publiclyVisible()
                     ->latest('id')
                     ->get()
                     ->groupBy('product_id');
@@ -179,11 +185,13 @@ class ProductController extends Controller
                 'seller',
                 'activeVariants.attributeItems',
                 'activeVariants.image',
+                'primaryImage',
                 'images',
                 'specifications.attribute',
                 'specifications.attributeItem',
                 'activeCampaign',
             ])
+            ->withCount('variants')
             ->first();
 
         if (! $product) {
@@ -242,7 +250,7 @@ class ProductController extends Controller
             if (! empty($friendIds)) {
                 $friendPicksQuery = UserPick::with(['user.profile', 'user.communityShop'])
                     ->where('product_id', $product->id)
-                    ->where('is_public', true)
+                    ->publiclyVisible()
                     ->whereIn('user_id', $friendIds)
                     ->latest('id');
 
@@ -397,7 +405,9 @@ class ProductController extends Controller
                 'seller:id,store_name,slug,district,upazila,logo_url',
                 'primaryImage',
                 'images',
+                'activeVariants.image',
             ])
+            ->withCount('variants')
             ->limit(10)
             ->get()
             ->map(fn (Product $p) => $this->formatProduct($p));
@@ -413,44 +423,6 @@ class ProductController extends Controller
      */
     private function formatProduct(Product $product): array
     {
-        $primaryImg = $product->primaryImage?->image_url
-            ?? $product->images->first()?->image_url
-            ?? 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800&auto=format&fit=crop&q=80';
-
-        return [
-            'id' => $product->id,
-            'title' => $product->title,
-            'slug' => $product->slug,
-            'short_description' => $product->short_description,
-            'base_price' => $product->base_price,
-            'compare_price' => $product->compare_price,
-            'discount_percent' => $product->discount_percent,
-            'stock_quantity' => $product->effective_stock,
-            'is_normal_purchase_enabled' => $product->is_normal_purchase_enabled,
-            'is_group_buy_enabled' => $product->is_group_buy_enabled,
-            'is_community_shop_enabled' => $product->is_community_shop_enabled,
-            'is_featured' => $product->is_featured,
-            'is_drop_ready' => $product->is_group_buy_enabled,
-            'is_cod_available' => $product->is_cod_available,
-            'is_free_shipping' => $product->is_free_shipping,
-            'shipping_charge' => $product->shipping_charge ?? 60.00,
-            'rating_avg' => $product->rating_avg,
-            'rating_count' => $product->rating_count,
-            'image' => $primaryImg,
-            'category' => [
-                'id' => $product->category?->id,
-                'name' => $product->category?->name,
-                'slug' => $product->category?->slug,
-                'icon' => $product->category?->icon,
-            ],
-            'seller' => [
-                'id' => $product->seller?->id,
-                'store_name' => $product->seller?->store_name,
-                'slug' => $product->seller?->slug,
-                'locality' => $product->seller?->upazila ?? $product->seller?->district,
-                'logo_url' => $product->seller?->logo_url,
-                'rating_avg' => $product->seller?->rating_avg,
-            ],
-        ];
+        return ProductSummary::make($product);
     }
 }

@@ -11,6 +11,10 @@ class MediaUrl
      */
     public static function getBaseUrl(): string
     {
+        if ($localBase = self::localDevelopmentBaseUrl()) {
+            return $localBase;
+        }
+
         // 1. If running in HTTP request context and host is not localhost, use request host
         if (app()->bound('request')) {
             try {
@@ -37,6 +41,35 @@ class MediaUrl
     }
 
     /**
+     * Local fixture media must stay local only in an explicitly local app.
+     */
+    private static function localDevelopmentBaseUrl(): ?string
+    {
+        $appUrl = config('app.url');
+        if (! app()->environment('local') || ! is_string($appUrl) || ! self::isLoopbackHttpUrl($appUrl)) {
+            return null;
+        }
+
+        $parts = parse_url($appUrl);
+        if (isset($parts['query']) || isset($parts['fragment'])) {
+            return null;
+        }
+
+        return rtrim($appUrl, '/');
+    }
+
+    private static function isLoopbackHttpUrl(string $url): bool
+    {
+        $parts = parse_url($url);
+
+        return is_array($parts)
+            && in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+            && in_array(strtolower($parts['host'] ?? ''), ['localhost', '127.0.0.1', '[::1]', '::1'], true)
+            && ! isset($parts['user'])
+            && ! isset($parts['pass']);
+    }
+
+    /**
      * Resolve any image or asset path to a full live URL.
      * Replaces localhost/127.0.0.1 references and formats relative storage paths.
      */
@@ -49,6 +82,9 @@ class MediaUrl
         }
 
         $target = trim((string) $target);
+        if (self::localDevelopmentBaseUrl() !== null && self::isLoopbackHttpUrl($target)) {
+            return $target;
+        }
         $base = self::getBaseUrl();
 
         // 1. Remove double storage prefixes if present
